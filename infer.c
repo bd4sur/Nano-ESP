@@ -7,7 +7,7 @@
 //
 
 #include "infer.h"
-
+#include "arduino_wrapper.h"
 // ===============================================================================
 // 模型文件解析·内存管理
 // ===============================================================================
@@ -30,7 +30,7 @@ void malloc_fwd_buffer(LLM *llm, uint32_t max_seq_len) {
 
     uint32_t xbuf_length = llm_cfg->n_embd + llm_cfg->n_embd + q_dim + llm_cfg->n_embd + llm_cfg->n_hidden + llm_cfg->n_hidden
                          + q_dim + llm_cfg->n_head * max_seq_len + llm_cfg->vocab_size;        
-    s->xbuf = (float *)calloc(xbuf_length, sizeof(float));
+    s->xbuf = (float *)psram_calloc(xbuf_length, sizeof(float));
     float *xbuf = s->xbuf;
 
     s->x       = xbuf;  xbuf += llm_cfg->n_embd;
@@ -44,7 +44,7 @@ void malloc_fwd_buffer(LLM *llm, uint32_t max_seq_len) {
     s->logits  = xbuf;  xbuf += llm_cfg->vocab_size;
 
     uint32_t kvcache_length = llm_cfg->n_layer * max_seq_len * kv_dim * 2;        
-    s->kvcache = (float *)calloc(kvcache_length, sizeof(float));
+    s->kvcache = (float *)psram_calloc(kvcache_length, sizeof(float));
     float *kvcache = s->kvcache;
 
     s->k_cache = kvcache;  kvcache += llm_cfg->n_layer * max_seq_len * kv_dim;
@@ -55,8 +55,8 @@ void malloc_fwd_buffer(LLM *llm, uint32_t max_seq_len) {
 
         uint32_t qvbuf_length = llm_cfg->n_embd + q_dim + llm_cfg->n_hidden;
         uint32_t qsbuf_length = llm_cfg->n_embd / gs + q_dim / gs + llm_cfg->n_hidden / gs;
-        s->qvbuf = (QTYPE *)calloc(qvbuf_length, sizeof(QTYPE));
-        s->qsbuf = (float *)calloc(qsbuf_length, sizeof(float));
+        s->qvbuf = (QTYPE *)psram_calloc(qvbuf_length, sizeof(QTYPE));
+        s->qsbuf = (float *)psram_calloc(qsbuf_length, sizeof(float));
         QTYPE *qvbuf = s->qvbuf;
         float *qsbuf = s->qsbuf;
 
@@ -116,7 +116,7 @@ void memory_map_params(LLM *llm, void* ptr) {
         ptr = (void*)fptr;
 
         w->q_tokens = parse_quantized_tensors(&ptr, 1, cfg->vocab_size * cfg->n_embd, llm->group_size);
-        w->token_embedding = (float *)calloc(cfg->vocab_size * cfg->n_embd, sizeof(float));
+        w->token_embedding = (float *)psram_calloc(cfg->vocab_size * cfg->n_embd, sizeof(float));
         dequantize(&w->q_tokens->tensor_q80, w->token_embedding, cfg->vocab_size * cfg->n_embd, llm->group_size);
 
         w->wq = parse_quantized_tensors(&ptr, n_layer, cfg->n_embd * (cfg->n_head * head_size), llm->group_size);
@@ -133,14 +133,14 @@ void memory_map_params(LLM *llm, void* ptr) {
     else if (llm->quant_type == QUANT_TYPE_F32) {
         w->token_embedding = fptr; fptr += cfg->vocab_size * cfg->n_embd;
 
-        w->wq = (Typed_Tensor *)calloc(1, sizeof(Typed_Tensor));  w->wq->tensor_f32 = fptr;  fptr += n_layer * cfg->n_embd * (cfg->n_head * head_size);
-        w->wk = (Typed_Tensor *)calloc(1, sizeof(Typed_Tensor));  w->wk->tensor_f32 = fptr;  fptr += n_layer * cfg->n_embd * (cfg->n_kv_head * head_size);
-        w->wv = (Typed_Tensor *)calloc(1, sizeof(Typed_Tensor));  w->wv->tensor_f32 = fptr;  fptr += n_layer * cfg->n_embd * (cfg->n_kv_head * head_size);
-        w->wo = (Typed_Tensor *)calloc(1, sizeof(Typed_Tensor));  w->wo->tensor_f32 = fptr;  fptr += n_layer * (cfg->n_head * head_size) * cfg->n_embd;
+        w->wq = (Typed_Tensor *)psram_calloc(1, sizeof(Typed_Tensor));  w->wq->tensor_f32 = fptr;  fptr += n_layer * cfg->n_embd * (cfg->n_head * head_size);
+        w->wk = (Typed_Tensor *)psram_calloc(1, sizeof(Typed_Tensor));  w->wk->tensor_f32 = fptr;  fptr += n_layer * cfg->n_embd * (cfg->n_kv_head * head_size);
+        w->wv = (Typed_Tensor *)psram_calloc(1, sizeof(Typed_Tensor));  w->wv->tensor_f32 = fptr;  fptr += n_layer * cfg->n_embd * (cfg->n_kv_head * head_size);
+        w->wo = (Typed_Tensor *)psram_calloc(1, sizeof(Typed_Tensor));  w->wo->tensor_f32 = fptr;  fptr += n_layer * (cfg->n_head * head_size) * cfg->n_embd;
 
-        w->w1 = (Typed_Tensor *)calloc(1, sizeof(Typed_Tensor));  w->w1->tensor_f32 = fptr;  fptr += n_layer * cfg->n_embd * cfg->n_hidden;
-        w->w2 = (Typed_Tensor *)calloc(1, sizeof(Typed_Tensor));  w->w2->tensor_f32 = fptr;  fptr += n_layer * cfg->n_hidden * cfg->n_embd;
-        w->w3 = (Typed_Tensor *)calloc(1, sizeof(Typed_Tensor));  w->w3->tensor_f32 = fptr;  fptr += n_layer * cfg->n_embd * cfg->n_hidden;
+        w->w1 = (Typed_Tensor *)psram_calloc(1, sizeof(Typed_Tensor));  w->w1->tensor_f32 = fptr;  fptr += n_layer * cfg->n_embd * cfg->n_hidden;
+        w->w2 = (Typed_Tensor *)psram_calloc(1, sizeof(Typed_Tensor));  w->w2->tensor_f32 = fptr;  fptr += n_layer * cfg->n_hidden * cfg->n_embd;
+        w->w3 = (Typed_Tensor *)psram_calloc(1, sizeof(Typed_Tensor));  w->w3->tensor_f32 = fptr;  fptr += n_layer * cfg->n_embd * cfg->n_hidden;
     }
 
     if (llm->arch == LLM_ARCH_QWEN2) {
@@ -158,8 +158,8 @@ void memory_map_params(LLM *llm, void* ptr) {
         w->freq_cis_imag = fptr;  fptr += cfg->block_size * head_size / 2;
     }
     else if (llm->arch == LLM_ARCH_QWEN3) {
-        w->freq_cis_real = calloc(cfg->block_size * head_size / 2, sizeof(float));
-        w->freq_cis_imag = calloc(cfg->block_size * head_size / 2, sizeof(float));
+        w->freq_cis_real = psram_calloc(cfg->block_size * head_size / 2, sizeof(float));
+        w->freq_cis_imag = psram_calloc(cfg->block_size * head_size / 2, sizeof(float));
 
         for (uint32_t pos = 0; pos < cfg->block_size; pos++) {
             for (uint32_t i = 0; i < head_size / 2; i++) {
@@ -179,7 +179,7 @@ void memory_map_params(LLM *llm, void* ptr) {
         w->token_classifier = cfg->is_shared_classifier ? w->q_tokens : parse_quantized_tensors(&ptr, 1, cfg->n_embd * cfg->vocab_size, llm->group_size);
     }
     else if (llm->quant_type == QUANT_TYPE_F32) {
-        w->token_classifier = (Typed_Tensor *)calloc(1, sizeof(Typed_Tensor));
+        w->token_classifier = (Typed_Tensor *)psram_calloc(1, sizeof(Typed_Tensor));
         w->token_classifier->tensor_f32 = cfg->is_shared_classifier ? w->token_embedding : ptr;
     }
 }
@@ -196,14 +196,14 @@ void parse_model_file(uint8_t* buffer, LLM *llm, Tokenizer *tk) {
 
     uint32_t offset = 0;
 
-    uint32_t magic_number_0 = header[offset]; offset++;
-    uint32_t magic_number_1 = header[offset]; offset++;
+    /* uint32_t magic_number_0 = header[offset]; */ offset++;
+    /* uint32_t magic_number_1 = header[offset]; */ offset++;
 
-    uint32_t major_version  = header[offset]; offset++;
-    uint32_t minor_version  = header[offset]; offset++;
+    /* uint32_t major_version  = header[offset]; */ offset++;
+    /* uint32_t minor_version  = header[offset]; */ offset++;
 
     uint32_t model_type     = header[offset]; offset++;
-    uint32_t config_length  = header[offset]; offset++;
+    /* uint32_t config_length  = header[offset]; */ offset++;
 
     config->block_size      = header[offset]; offset++;
     config->vocab_size      = header[offset]; offset++;
@@ -236,8 +236,8 @@ void parse_model_file(uint8_t* buffer, LLM *llm, Tokenizer *tk) {
 
         tk->vocab_size = *vocab_ptr; vocab_ptr++;
 
-        tk->token_list        = (wchar_t **)calloc(tk->vocab_size, sizeof(wchar_t *));
-        tk->unicode_charset   = (wchar_t  *)calloc(tk->vocab_size, sizeof(wchar_t));
+        tk->token_list        = (wchar_t **)psram_calloc(tk->vocab_size, sizeof(wchar_t *));
+        tk->unicode_charset   = (wchar_t  *)psram_calloc(tk->vocab_size, sizeof(wchar_t));
         tk->unicode_to_id_map = new_map(tk->vocab_size);
         tk->token_to_id_map   = new_map(tk->vocab_size);
         tk->vocab_trie        = new_trie(tk->vocab_size, 0);
@@ -252,7 +252,7 @@ void parse_model_file(uint8_t* buffer, LLM *llm, Tokenizer *tk) {
             // uint32_t is_special   = (token_header & 0x0000ff00) >> 8;
             uint32_t token_length = (token_header & 0x000000ff);
 
-            wchar_t *token = (wchar_t *)calloc(token_length+1, sizeof(wchar_t));
+            wchar_t *token = (wchar_t *)psram_calloc(token_length+1, sizeof(wchar_t));
             // 如果是单个字符，则加入unicode_charset
             if(token_length == 1) {
                 tk->unicode_charset[char_count] = *vocab_ptr;
@@ -339,7 +339,9 @@ void free_llm(LLM* llm, Tokenizer *tk) {
     free(llm->buffer);
 #endif
 
-    free(llm->params.token_embedding);
+    if (llm->quant_type == QUANT_TYPE_Q80) {
+        free(llm->params.token_embedding);
+    }
     free(llm->params.q_tokens);
     if (llm->config.is_shared_classifier == 0) {
         free(llm->params.token_classifier);
@@ -658,8 +660,10 @@ void rope(float *head, uint32_t head_dim, uint32_t pos, float *freq_cis_real_row
     }
 }
 
-
-float* llm_forward(uint32_t token, uint32_t pos, uint32_t max_seq_len, LLM* llm, LoRA *lora) {
+// NOTE 该函数实现了在1个token+过往KVCache上的完整的因果自注意力前向推理。对于一般的自回归因果语言模型推理，is_causal=1。
+//      参数is_causal=0启用全局自注意力，仅用于（且必须搭配用于）seq2seq函数。因该函数并没有实现完整的seq2seq全局自注意力前向推理。
+//      seq2seq函数主要是整活用途，有大量冗余计算，效率极低。
+float* llm_forward(uint32_t token, uint32_t pos, uint32_t max_seq_len, uint32_t is_causal, LLM* llm, LoRA *lora) {
 
     LLM_Config *cfg = &llm->config;
     LLM_Param *w = &llm->params;
@@ -817,7 +821,8 @@ float* llm_forward(uint32_t token, uint32_t pos, uint32_t max_seq_len, LLM* llm,
             // attention scores for this head
             float* att = s->att + h * max_seq_len; // NOTE max_seq_len不一定等于模型本身的block_size。这样做的目的是为了节约内存。
             // iterate over all timesteps, including the current one
-            for (int t = 0; t <= pos; t++) {
+            uint32_t attn_range = (is_causal) ? (pos + 1) : max_seq_len; // NOTE 用于兼容因果自注意力和全局自注意力
+            for (int t = 0; t < attn_range; t++) {
                 // get the key vector for this head and at this timestep
                 float* k = s->k_cache + layer_offset + t * kv_dim + (h / kv_mul) * head_dim;
                 // calculate the attention score as the dot product of q and k
@@ -831,12 +836,12 @@ float* llm_forward(uint32_t token, uint32_t pos, uint32_t max_seq_len, LLM* llm,
             }
 
             // softmax the scores to get attention weights, from 0..pos inclusively
-            softmax(att, pos + 1);
+            softmax(att, attn_range);
 
             // weighted sum of the values, store back into xba
             float* xba = s->xba + h * head_dim;
             memset(xba, 0, head_dim * sizeof(float));
-            for (int t = 0; t <= pos; t++) {
+            for (int t = 0; t < attn_range; t++) {
                 // get the value vector for this head and at this timestep
                 float* v = s->v_cache + layer_offset + t * kv_dim + (h / kv_mul) * head_dim;
                 // get the attention weight for this timestep
@@ -1033,7 +1038,7 @@ uint32_t generate_next_token(Nano_Context *ctx, uint32_t *output_ids, uint32_t p
 
     uint32_t next_token = output_ids[pos];
 
-    float* logits = llm_forward(next_token, pos, ctx->max_seq_len, llm, lora);
+    float* logits = llm_forward(next_token, pos, ctx->max_seq_len, 1, llm, lora);
 
     // Pre-fill: if we are still processing the input prompt, force the next prompt token
     if (is_prefilling == 1) {
@@ -1082,10 +1087,10 @@ uint32_t generate_next_token(Nano_Context *ctx, uint32_t *output_ids, uint32_t p
 
 
 Nano_Session *llm_session_init(Nano_Context *ctx, wchar_t *prompt, unsigned int max_seq_len) {
-    Nano_Session *session = (Nano_Session *)calloc(1, sizeof(Nano_Session));
+    Nano_Session *session = (Nano_Session *)psram_calloc(1, sizeof(Nano_Session));
     Tokenizer *tokenizer = ctx->tokenizer;
 
-    session->prompt = (wchar_t *)calloc(MAX_PROMPT_BUFFER_LENGTH + 1, sizeof(wchar_t));
+    session->prompt = (wchar_t *)psram_calloc(MAX_PROMPT_BUFFER_LENGTH + 1, sizeof(wchar_t));
     if (prompt == NULL) {
         wcscpy(session->prompt, L"");
     }
@@ -1099,7 +1104,7 @@ Nano_Session *llm_session_init(Nano_Context *ctx, wchar_t *prompt, unsigned int 
 
     session->max_seq_len = max_seq_len;
 
-    session->output_ids = (uint32_t *)calloc(max_seq_len + 1, sizeof(uint32_t));
+    session->output_ids = (uint32_t *)psram_calloc(max_seq_len + 1, sizeof(uint32_t));
     session->output_count = 0;
 
     session->num_prompt_tokens = 0;
@@ -1225,3 +1230,45 @@ int32_t generate_sync(
     llm_session_free(session);
     return status;
 }
+
+
+// 序列生成：用于推理诸如排序、回文数等Nano架构的序列生成模型
+void seq2seq(Nano_Context *ctx, wchar_t *input_list, wchar_t *output_list, uint32_t max_seq_len) {
+    uint32_t num_prompt_tokens = 0;
+    uint32_t *input_ids = encode_nano(ctx->tokenizer, input_list, &num_prompt_tokens);
+    uint32_t *output_ids = (uint32_t *)psram_calloc(max_seq_len, sizeof(uint32_t));
+
+    LLM *llm = ctx->llm;
+    Sampler *sampler = ctx->sampler;
+
+    float *output_logits = (float*)psram_calloc(max_seq_len * sampler->vocab_size, sizeof(float));
+
+    // 阶段1：预填充KVCache。
+    //   内层循环对输入序列的每一个pos进行前向计算，填充每一层的第pos位置上的KVCache。
+    //   一次遍历完整个序列后，只有第一层的KVCache完成了对整个序列的全局自注意力，但下游各层并没有。
+    //   下游各层的KVCache依赖于上游各层完成全局自注意力（输出的中间值）。因此这个过程需要执行L次。
+    for (uint32_t i = 0; i < llm->config.n_layer; i++) {
+        for (uint32_t pos = 0; pos < max_seq_len; pos++) {
+            (void)llm_forward(input_ids[pos], pos, max_seq_len, 0, llm, NULL);
+
+        }
+    }
+
+    // 阶段2：KVCache全部填充后，再对每个pos执行完整的forward，获得每个pos上的logits
+    for (uint32_t pos = 0; pos < max_seq_len; pos++) {
+        float *logits = llm_forward(input_ids[pos], pos, max_seq_len, 0, llm, NULL);
+        memcpy(output_logits + pos * sampler->vocab_size, logits, sampler->vocab_size *sizeof(float));
+    }
+
+    // 阶段3：对每个pos上的logits进行单独的采样
+    for (uint32_t pos = 0; pos < max_seq_len; pos++) {
+        float *logits = output_logits + pos * sampler->vocab_size;
+        output_ids[pos] = sample_argmax(logits, sampler->vocab_size);
+    }
+
+    free(input_ids);
+    free(output_logits);
+
+    wcscpy(output_list, decode_nano(ctx->tokenizer, output_ids, max_seq_len));
+}
+
