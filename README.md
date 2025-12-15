@@ -1,5 +1,14 @@
 # Nano-ESP
 
+## 与主线的差异
+
+- ui.h: INPUT_BUFFER_LENGTH OUTPUT_BUFFER_LENGTH
+- ui.c: #include "arduino_wrapper.h"
+- tokenizer.h: MAX_PROMPT_BUFFER_LENGTH
+- platform.h: #define NANO_ESP32_S3
+- infer.c: ps_calloc #include "arduino_wrapper.h"
+- Nano-ESP.ino vs main.c
+
 ## ESP32-S3
 
 注意：`ui.c`中的`time()`似乎不支持。

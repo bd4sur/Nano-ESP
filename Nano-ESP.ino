@@ -40,7 +40,7 @@ static char *MODEL_PATH_6 = MODEL_ROOT_DIR "/qwen3-4b-instruct-2507-q80.bin";
 
 static float g_tps_of_last_session = 0.0f;
 static wchar_t g_llm_output_of_last_session[OUTPUT_BUFFER_LENGTH] = L"";
-static wchar_t g_asr_output[10] = L"请说话...";
+static wchar_t g_asr_output[OUTPUT_BUFFER_LENGTH] = L"请说话...";
 
 static wchar_t g_anniversory[OUTPUT_BUFFER_LENGTH] = L"我在博客中";
 
@@ -53,8 +53,7 @@ char *g_lora_path = NULL;
 float g_repetition_penalty = 1.05f;
 float g_temperature = 1.0f;
 float g_top_p = 0.5f;
-unsigned int g_top_k = 0;
-unsigned long long g_random_seed = 0;
+uint32_t g_top_k = 0;
 uint32_t g_max_seq_len = 512;
 
 
@@ -278,7 +277,7 @@ int32_t model_menu_item_action(int32_t item_index) {
         g_top_p = 0.5f;
         g_top_k = 0;
         g_max_seq_len = 512;
-        global_state->refresh_ratio = 1;
+        global_state->refresh_ratio = 8;
     }
     else if (item_index == 1) {
         wcscpy(widget_textarea_state->text, L" 正在加载语言模型\n Nano-56M-QA\n 请稍等...");
@@ -289,7 +288,7 @@ int32_t model_menu_item_action(int32_t item_index) {
         g_top_p = 0.5f;
         g_top_k = 0;
         g_max_seq_len = 512;
-        global_state->refresh_ratio = 1;
+        global_state->refresh_ratio = 8;
     }
     else if (item_index == 2) {
         wcscpy(widget_textarea_state->text, L" 正在加载语言模型\n Nano-56M-Neko\n 请稍等...");
@@ -300,7 +299,7 @@ int32_t model_menu_item_action(int32_t item_index) {
         g_top_p = 0.5f;
         g_top_k = 0;
         g_max_seq_len = 512;
-        global_state->refresh_ratio = 1;
+        global_state->refresh_ratio = 8;
     }
     else if (item_index == 3) {
         wcscpy(widget_textarea_state->text, L" 正在加载语言模型\n Qwen3-0.6B\n 请稍等...");
@@ -389,7 +388,6 @@ int32_t setting_menu_item_action(int32_t item_index) {
 
 
 void setup() {
-    (void)g_asr_output; // 抑制编译器报变量未使用问题
 
     Serial.begin(115200);
 
@@ -399,6 +397,8 @@ void setup() {
     Wire.setClock(400000);
 
     // if(!setlocale(LC_CTYPE, "")) return -1;
+
+    (void)g_asr_output; // 抑制编译器报变量未使用问题
 
     ///////////////////////////////////////
     // 初始化GUI状态
@@ -681,8 +681,8 @@ void setup() {
                     // wcscat(prompt, L" /no_think");
                 }
                 else {
-                    printf("Error: unknown model arch.\n");
-                    // exit(EXIT_FAILURE);
+                    STATE = -1;
+                    break;
                 }
 
                 // 初始化对话session
@@ -749,15 +749,16 @@ void setup() {
                 wcscat(prompt_and_output, widget_input_state->text);
                 wcscat(prompt_and_output, L"\n--------------------\nNano:\n");
                 wcscat(prompt_and_output, g_llm_output_of_last_session);
+                // 推理中止
                 if (global_state->llm_status == LLM_STOPPED_IN_PREFILLING || global_state->llm_status == LLM_STOPPED_IN_DECODING) {
-                    Serial.print("推理中止。\n");
                     wcscat(prompt_and_output, L"\n\n[Nano:推理中止]");
                 }
+                // 推理自然结束
                 else if (global_state->llm_status == LLM_STOPPED_NORMALLY) {
-                    Serial.print("推理自然结束。\n");
+
                 }
+                // 推理异常结束
                 else {
-                    Serial.print("推理异常结束。\n");
                     wcscat(prompt_and_output, L"\n\n[Nano:推理异常结束]");
                 }
                 wchar_t tps_wcstr[50];
