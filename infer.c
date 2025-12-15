@@ -104,7 +104,7 @@ void memory_map_params(LLM *llm, void* ptr) {
     }
 
     // make sure the multiplications below are done in 64bit to fit the parameter counts of 13B+ models
-    unsigned long long n_layer = cfg->n_layer;
+    uint64_t n_layer = cfg->n_layer;
 
     float* fptr = (float*) ptr;
 
@@ -196,14 +196,14 @@ void parse_model_file(uint8_t* buffer, LLM *llm, Tokenizer *tk) {
 
     uint32_t offset = 0;
 
-    /* uint32_t magic_number_0 = header[offset]; */ offset++;
-    /* uint32_t magic_number_1 = header[offset]; */ offset++;
+    uint32_t magic_number_0 = header[offset]; offset++; (void)magic_number_0;
+    uint32_t magic_number_1 = header[offset]; offset++; (void)magic_number_1;
 
-    /* uint32_t major_version  = header[offset]; */ offset++;
-    /* uint32_t minor_version  = header[offset]; */ offset++;
+    uint32_t major_version  = header[offset]; offset++; (void)major_version;
+    uint32_t minor_version  = header[offset]; offset++; (void)minor_version;
 
     uint32_t model_type     = header[offset]; offset++;
-    /* uint32_t config_length  = header[offset]; */ offset++;
+    uint32_t config_length  = header[offset]; offset++; (void)config_length;
 
     config->block_size      = header[offset]; offset++;
     config->vocab_size      = header[offset]; offset++;
@@ -247,9 +247,9 @@ void parse_model_file(uint8_t* buffer, LLM *llm, Tokenizer *tk) {
             uint32_t token_id     = *vocab_ptr; vocab_ptr++; byte_count += sizeof(uint32_t);
 
             // NOTE Little endian 小端序！如果按照uint32解析，顺序是 MSB(reserved_1 reserved_0 is_special token_length)LSB
-            // uint32_t reserved_1   = (token_header & 0xff000000) >> 24;
-            // uint32_t reserved_0   = (token_header & 0x00ff0000) >> 16;
-            // uint32_t is_special   = (token_header & 0x0000ff00) >> 8;
+            uint32_t reserved_1   = (token_header & 0xff000000) >> 24; (void)reserved_1;
+            uint32_t reserved_0   = (token_header & 0x00ff0000) >> 16; (void)reserved_0;
+            uint32_t is_special   = (token_header & 0x0000ff00) >> 8;  (void)is_special;
             uint32_t token_length = (token_header & 0x000000ff);
 
             wchar_t *token = (wchar_t *)psram_calloc(token_length+1, sizeof(wchar_t));
@@ -410,14 +410,14 @@ void parse_lora_file(uint8_t* buffer, LoRA *lora, LLM *llm) {
 
     uint32_t offset = 0;
 
-    /*uint32_t magic_number_0 = header[offset];*/ offset++;
-    /*uint32_t magic_number_1 = header[offset];*/ offset++;
+    uint32_t magic_number_0 = header[offset]; offset++; (void)magic_number_0;
+    uint32_t magic_number_1 = header[offset]; offset++; (void)magic_number_1;
 
-    /*uint32_t major_version  = header[offset];*/ offset++;
-    /*uint32_t minor_version  = header[offset];*/ offset++;
+    uint32_t major_version  = header[offset]; offset++; (void)major_version;
+    uint32_t minor_version  = header[offset]; offset++; (void)minor_version;
 
-    /*uint32_t model_type     = header[offset];*/ offset++;
-    /*uint32_t config_length  = header[offset];*/ offset++;
+    uint32_t model_type     = header[offset]; offset++; (void)model_type;
+    uint32_t config_length  = header[offset]; offset++; (void)config_length;
 
     lora_cfg->lora_rank     = header[offset]; offset++;
     lora_cfg->lora_alpha    = header[offset]; offset++;
@@ -470,7 +470,7 @@ LoRA *load_lora(LLM *llm, char *lora_path) {
 
     // 获取文件大小
     fseek(file, 0, SEEK_END);
-    long long unsigned int file_size = ftell(file);
+    uint64_t file_size = ftell(file);
     rewind(file);
 
     uint8_t *lora_buffer = (uint8_t *)calloc(file_size + 1, sizeof(uint8_t));
@@ -516,7 +516,7 @@ void free_lora(LLM *llm, LoRA *lora) {
 // 推理引擎单例（现在暂且叫context）管理
 // ===============================================================================
 
-Nano_Context *llm_context_init_from_buffer(uint8_t *buffer, uint32_t max_seq_len, float repetition_penalty, float temperature, float top_p, uint32_t top_k, unsigned long long random_seed) {
+Nano_Context *llm_context_init_from_buffer(uint8_t *buffer, uint32_t max_seq_len, float repetition_penalty, float temperature, float top_p, uint32_t top_k, uint64_t random_seed) {
     Nano_Context *ctx = (Nano_Context*)calloc(1, sizeof(Nano_Context));
     ctx->max_seq_len = max_seq_len;
     ctx->random_seed = random_seed;
@@ -528,7 +528,7 @@ Nano_Context *llm_context_init_from_buffer(uint8_t *buffer, uint32_t max_seq_len
     return ctx;
 }
 
-Nano_Context *llm_context_init(char *model_path, char *lora_path, uint32_t max_seq_len, float repetition_penalty, float temperature, float top_p, uint32_t top_k, unsigned long long random_seed) {
+Nano_Context *llm_context_init(char *model_path, char *lora_path, uint32_t max_seq_len, float repetition_penalty, float temperature, float top_p, uint32_t top_k, uint64_t random_seed) {
     Nano_Context *ctx = (Nano_Context*)calloc(1, sizeof(Nano_Context));
     ctx->max_seq_len = max_seq_len;
     ctx->random_seed = random_seed;
@@ -709,7 +709,7 @@ float* llm_forward(uint32_t token, uint32_t pos, uint32_t max_seq_len, uint32_t 
     float *freq_cis_imag_row = w->freq_cis_imag + pos * head_dim / 2;
 
     // forward all the layers
-    for(unsigned long long l = 0; l < cfg->n_layer; l++) {
+    for(uint64_t l = 0; l < cfg->n_layer; l++) {
 
         // attention rmsnorm
         rmsnorm(s->xb, x, w->rms_norm_attn + l*n_embd, n_embd);
@@ -1007,7 +1007,7 @@ int sample_top_p(float* probabilities, int n, float top_p, ProbIndex* probindex,
     return probindex[last_idx].index; // in case of rounding errors
 }
 
-Sampler *build_sampler(int vocab_size, float repetition_penalty, float temperature, float top_p, uint32_t top_k, unsigned long long rng_seed) {
+Sampler *build_sampler(int vocab_size, float repetition_penalty, float temperature, float top_p, uint32_t top_k, uint64_t rng_seed) {
     Sampler *sampler = (Sampler *)calloc(1, sizeof(Sampler));
     sampler->vocab_size = vocab_size;
     sampler->repetition_penalty = repetition_penalty;

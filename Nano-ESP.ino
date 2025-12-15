@@ -15,6 +15,13 @@
 
 #include "platform.h"
 
+#ifdef ASR_ENABLED
+    #include "asr.h"
+#endif
+#ifdef TTS_ENABLED
+    #include "tts.h"
+#endif
+
 #define PREFILL_LED_ON  system("echo \"1\" > /sys/devices/platform/leds/leds/green:status/brightness");
 #define PREFILL_LED_OFF system("echo \"0\" > /sys/devices/platform/leds/leds/green:status/brightness");
 #define DECODE_LED_ON   system("echo \"1\" > /sys/devices/platform/leds/leds/blue:status/brightness");
@@ -51,25 +58,6 @@ unsigned long long g_random_seed = 0;
 uint32_t g_max_seq_len = 512;
 
 
-// 传递PTT状态的命名管道
-int g_ptt_fifo_fd = 0;
-// 传递ASR识别结果的命名管道
-int g_asr_fifo_fd = 0;
-// 传递给TTS的文字内容的命名管道
-int g_tts_fifo_fd = 0;
-
-#define PTT_FIFO_PATH "/tmp/ptt_fifo"
-
-#define ASR_FIFO_PATH "/tmp/asr_fifo"
-#define ASR_BUFFER_SIZE (65536)
-
-#define TTS_FIFO_PATH "/tmp/tts_fifo"
-#define TTS_BUFFER_SIZE (4096)
-
-
-// TTS分句用全局变量
-int32_t g_tts_split_from = 0; // 切句子的起始位置
-
 
 ///////////////////////////////////////
 // 全局GUI组件对象
@@ -89,74 +77,12 @@ int32_t STATE = -1;
 int32_t PREV_STATE = -1;
 
 
-
-
-
-// return time in milliseconds, for benchmarking the model speed
-long time_in_ms() {
-    return (long)millis();
-}
-
-
-
-
-// 优雅关机
-int32_t graceful_shutdown() {
-    return 0;
-}
-
-
-
-
-// 穷人的ASR服务状态检测：通过读取ASR服务的日志前64kB中是否出现“init finished”来判断
-int32_t check_asr_server_status() {
-    return 0;
-}
-
-
-
-
-
-// 以只读方式打开ASR命名管道（非阻塞）
-int32_t open_asr_fifo() {
-    return 0;
-}
-
-// 读取ASR管道内容
-int32_t read_asr_fifo(wchar_t *asr_text) {
-    return 0;
-}
-
-// 向TTS输入FIFO中写文本内容
-int32_t write_tts_fifo(char *text_bytes, int32_t len) {
-    return 0;
-}
-
-
-int32_t send_tts_request(wchar_t *text, int32_t is_finished) {
-    return 0;
-}
-
-
-int32_t stop_tts() {
-    return 0;
-}
-
-
-// 向PTT状态FIFO中写PTT状态
-int32_t set_ptt_status(uint8_t status) {
-    return 0;
-}
-
-
-
-
 int32_t on_llm_prefilling(Key_Event *key_event, Global_State *global_state, Nano_Session *session) {
     if (session->t_0 == 0) {
-        session->t_0 = time_in_ms();
+        session->t_0 = global_state->timestamp;
     }
     else {
-        session->tps = (session->pos - 1) / (double)(time_in_ms() - session->t_0) * 1000;
+        session->tps = (session->pos - 1) / (float)(global_state->timestamp - session->t_0) * 1000;
     }
 
     // 长/短按A键中止推理
@@ -200,7 +126,9 @@ int32_t on_llm_prefilling(Key_Event *key_event, Global_State *global_state, Nano
 
     }
 
-    g_tts_split_from = 0;
+#ifdef TTS_ENABLED
+    reset_tts_split_status();
+#endif
 
     // PREFILL_LED_OFF
     return LLM_RUNNING_IN_PREFILLING;
@@ -208,10 +136,10 @@ int32_t on_llm_prefilling(Key_Event *key_event, Global_State *global_state, Nano
 
 int32_t on_llm_decoding(Key_Event *key_event, Global_State *global_state, Nano_Session *session) {
     if (session->t_0 == 0) {
-        session->t_0 = time_in_ms();
+        session->t_0 = global_state->timestamp;
     }
     else {
-        session->tps = (session->pos - 1) / (double)(time_in_ms() - session->t_0) * 1000;
+        session->tps = (session->pos - 1) / (float)(global_state->timestamp - session->t_0) * 1000;
     }
 
     // 长/短按A键中止推理
@@ -244,9 +172,17 @@ int32_t on_llm_decoding(Key_Event *key_event, Global_State *global_state, Nano_S
 }
 
 int32_t on_llm_finished(Nano_Session *session) {
-    session->t_1 = time_in_ms();
-    session->tps = (session->pos - 1) / (double)(session->t_1 - session->t_0) * 1000;
+    session->t_1 = global_state->timestamp;
+    session->tps = (session->pos - 1) / (float)(session->t_1 - session->t_0) * 1000;
+
     wcscpy(g_llm_output_of_last_session, session->output_text);
+
+#ifdef TTS_ENABLED
+    if (g_config_tts_mode > 0) {
+        send_tts_request(session->output_text, 1);
+    }
+    reset_tts_split_status();
+#endif
 
     g_tps_of_last_session = session->tps;
 
@@ -292,116 +228,6 @@ void init_setting_menu() {
     setting_menu_state->item_num = 3;
     init_menu(key_event, global_state, setting_menu_state);
 }
-
-
-///////////////////////////////////////
-// 事件处理回调
-//   NOTE 现阶段，回调函数里面引用的都是全局变量。后续可以container或者ctx之类的参数形式传进去。
-
-// 通用的菜单事件处理
-int32_t menu_event_handler(
-    Key_Event *ke, Global_State *gs, Widget_Menu_State *ms,
-    int32_t (*menu_item_action)(int32_t), int32_t prev_focus, int32_t current_focus
-) {
-    // 短按0-9数字键：直接选中屏幕上显示的那页的相对第几项
-    if (ke->key_edge == -1 && (ke->key_code >= KEYCODE_NUM_0 && ke->key_code <= KEYCODE_NUM_9)) {
-        if (ke->key_code < ms->item_num) {
-            ms->current_item_intex = ms->first_item_intex + (uint32_t)(ke->key_code) - 1;
-        }
-        return menu_item_action(ms->current_item_intex);
-    }
-    // 短按A键：返回上一个焦点状态
-    else if (ke->key_edge == -1 && ke->key_code == KEYCODE_NUM_A) {
-        return prev_focus;
-    }
-    // 短按D键：执行菜单项对应的功能
-    else if (ke->key_edge == -1 && ke->key_code == KEYCODE_NUM_D) {
-        return menu_item_action(ms->current_item_intex);
-    }
-    // 长+短按*键：光标向上移动
-    else if ((ke->key_edge == -1 || ke->key_edge == -2) && ke->key_code == KEYCODE_NUM_STAR) {
-        if (ms->first_item_intex == 0 && ms->current_item_intex == 0) {
-            ms->first_item_intex = ms->item_num - ms->items_per_page;
-            ms->current_item_intex = ms->item_num - 1;
-        }
-        else if (ms->current_item_intex == ms->first_item_intex) {
-            ms->first_item_intex--;
-            ms->current_item_intex--;
-        }
-        else {
-            ms->current_item_intex--;
-        }
-
-        draw_menu(ke, gs, ms);
-
-        return current_focus;
-    }
-    // 长+短按#键：光标向下移动
-    else if ((ke->key_edge == -1 || ke->key_edge == -2) && ke->key_code == KEYCODE_NUM_HASH) {
-        if (ms->first_item_intex == ms->item_num - ms->items_per_page && ms->current_item_intex == ms->item_num - 1) {
-            ms->first_item_intex = 0;
-            ms->current_item_intex = 0;
-        }
-        else if (ms->current_item_intex == ms->first_item_intex + ms->items_per_page - 1) {
-            ms->first_item_intex++;
-            ms->current_item_intex++;
-        }
-        else {
-            ms->current_item_intex++;
-        }
-
-        draw_menu(ke, gs, ms);
-
-        return current_focus;
-    }
-
-    return current_focus;
-}
-
-
-// 通用的文本框卷行事件处理
-int32_t textarea_event_handler(
-    Key_Event *ke, Global_State *gs, Widget_Textarea_State *ts,
-    int32_t prev_focus, int32_t current_focus
-) {
-    // 短按A键：回到上一个焦点
-    if (ke->key_edge == -1 && ke->key_code == KEYCODE_NUM_A) {
-        return prev_focus;
-    }
-
-    // 长+短按*键：推理结果向上翻一行。如果翻到顶，则回到最后一行。
-    else if ((ke->key_edge == -1 || ke->key_edge == -2) && ke->key_code == KEYCODE_NUM_STAR) {
-        if (ts->current_line <= 0) { // 卷到顶
-            ts->current_line = ts->line_num - 5;
-        }
-        else {
-            ts->current_line--;
-        }
-
-        draw_textarea(ke, gs, ts);
-
-        return current_focus;
-    }
-
-    // 长+短按#键：推理结果向下翻一行。如果翻到底，则回到第一行。
-    else if ((ke->key_edge == -1 || ke->key_edge == -2) && ke->key_code == KEYCODE_NUM_HASH) {
-        if (ts->current_line >= (ts->line_num - 5)) { // 卷到底
-            ts->current_line = 0;
-        }
-        else {
-            ts->current_line++;
-        }
-
-        draw_textarea(ke, gs, ts);
-
-        return current_focus;
-    }
-
-    return current_focus;
-}
-
-
-
 
 
 ///////////////////////////////////////
@@ -514,16 +340,14 @@ int32_t model_menu_item_action(int32_t item_index) {
     widget_textarea_state->is_show_scroll_bar = 0;
     draw_textarea(key_event, global_state, widget_textarea_state);
 
-    g_random_seed = (unsigned int)micros();
-    // g_llm_ctx = llm_context_init(g_model_path, g_lora_path, g_max_seq_len, g_repetition_penalty, g_temperature, g_top_p, g_top_k, g_random_seed);
-    g_llm_ctx = llm_context_init_from_buffer((uint8_t *)psycho_230k_1214_q80, 512, 1.0, 1.0, 0.8, 20, g_random_seed);
+    g_llm_ctx = llm_context_init_from_buffer((uint8_t *)psycho_230k_1214_q80, 512, 1.0, 1.0, 0.8, 20, global_state->timestamp);
 
     wcscpy(widget_textarea_state->text, L"加载完成~");
     widget_textarea_state->current_line = 0;
     widget_textarea_state->is_show_scroll_bar = 0;
     draw_textarea(key_event, global_state, widget_textarea_state);
 
-    delayMicroseconds(500*1000);
+    sleep_in_ms(500);
 
     // 以下两条路选一个：
 
@@ -544,7 +368,7 @@ int32_t setting_menu_item_action(int32_t item_index) {
         widget_textarea_state->is_show_scroll_bar = 0;
         draw_textarea(key_event, global_state, widget_textarea_state);
 
-        delayMicroseconds(500*1000);
+        sleep_in_ms(500);
 
         refresh_menu(key_event, global_state, setting_menu_state);
         return 5;
@@ -565,6 +389,7 @@ int32_t setting_menu_item_action(int32_t item_index) {
 
 
 void setup() {
+    (void)g_asr_output; // 抑制编译器报变量未使用问题
 
     Serial.begin(115200);
 
@@ -634,8 +459,14 @@ void setup() {
     keyboard_hal_init();
     key_event->prev_key = KEYCODE_NUM_IDLE;
 
+    ///////////////////////////////////////
+    // 主循环
 
     while (1) {
+
+        // 物理时间戳
+        global_state->timestamp = get_timestamp_in_ms();
+
         uint8_t key = keyboard_hal_read_key();
         // 边沿
         if (key_event->key_mask != 1 && (key != key_event->prev_key)) {
@@ -677,7 +508,6 @@ void setup() {
                 }
                 // 如果没有点亮动作标记key_repeat，则达到长按阈值后触发长按事件
                 else if (key_event->key_timer >= LONG_PRESS_THRESHOLD) {
-                    // printf("按住超时触发长按：%d，计时=%d，key_mask=%d\n", (int)key, key_event->key_timer, (int)key_event->key_mask);
                     key_event->key_edge = -2;
                     key_event->key_mask = 1; // 软复位置1，即强制恢复为无按键状态，以便下一次轮询检测到下降沿（尽管物理上有键按下），触发长按事件
                     key = KEYCODE_NUM_IDLE; // 便于后面设置prev_key为KEYCODE_NUM_IDLE（无键按下）
@@ -693,6 +523,9 @@ void setup() {
             }
         }
         key_event->prev_key = key;
+
+
+
 
         switch(STATE) {
 
@@ -833,7 +666,7 @@ void setup() {
 
                 // 如果输入为空，则随机选用一个预置prompt
                 if (wcslen(widget_input_state->text) == 0) {
-                    set_random_prompt(widget_input_state->text, micros());
+                    set_random_prompt(widget_input_state->text, global_state->timer);
                     widget_input_state->length = wcslen(widget_input_state->text);
                 }
 
@@ -965,7 +798,7 @@ void setup() {
         /////////////////////////////////////////////
 
         case 21:
-
+#ifdef ASR_ENABLED
             // 首次获得焦点：初始化
             if (PREV_STATE != STATE) {
                 // 设置PTT状态为按下（>0）
@@ -983,13 +816,14 @@ void setup() {
                 wcscpy(asr_textarea_state->text, L"请说话...");
 
                 global_state->is_recording = 1;
-                global_state->asr_start_timestamp = 0;
+                global_state->asr_start_timestamp = global_state->timestamp;
             }
             PREV_STATE = STATE;
 
             // 实时显示ASR结果
             if (global_state->is_recording == 1) {
                 int32_t len = read_asr_fifo(g_asr_output);
+                (void)len;
 
                 // 临时关闭draw_textarea的整帧绘制，以便在textarea上绘制进度条之后再统一写入屏幕，否则反复的clear会导致进度条闪烁。
                 global_state->is_full_refresh = 0;
@@ -1005,7 +839,7 @@ void setup() {
 
                 // 绘制录音持续时间
                 wchar_t rec_duration[50];
-                swprintf(rec_duration, 50, L" %ds ", (int32_t)(millis() - global_state->asr_start_timestamp));
+                swprintf(rec_duration, 50, L" %ds ", (uint32_t)((global_state->timestamp - global_state->asr_start_timestamp) / 1000));
                 render_line(rec_duration, 0, 52, 0);
 
                 gfx_refresh();
@@ -1017,22 +851,22 @@ void setup() {
 
             // 松开按钮，停止PTT
             if (global_state->is_recording > 0 && key_event->key_edge == 0 && key_event->key_code == KEYCODE_NUM_IDLE) {
-                Serial.print("松开PTT\n");
+
                 global_state->is_recording = 0;
                 global_state->asr_start_timestamp = 0;
 
-                close(g_asr_fifo_fd);
+                close_asr_fifo();
 
                 // // 设置PTT状态为松开（==0）
                 if (set_ptt_status(0) < 0) break;
-                close(g_ptt_fifo_fd);
+                close_ptt_fifo();
 
                 wcscpy(asr_textarea_state->text, L" \n \n      识别完成");
                 asr_textarea_state->current_line = 0;
                 asr_textarea_state->is_show_scroll_bar = 0;
                 draw_textarea(key_event, global_state, asr_textarea_state);
 
-                delayMicroseconds(500*1000);
+                sleep_in_ms(500);
 
                 wcscpy(widget_input_state->text, g_asr_output);
                 widget_input_state->length = wcslen(g_asr_output);
@@ -1041,7 +875,6 @@ void setup() {
 
                 // ASR后立刻提交到LLM？
                 if (g_config_auto_submit_after_asr) {
-                    printf("立刻提交LLM：%ls\n", widget_input_state->text);
                     STATE = 8;
                 }
                 else {
@@ -1057,14 +890,14 @@ void setup() {
                 init_input(key_event, global_state, widget_input_state);
                 STATE = 0;
             }
-
+#endif
             break;
 
         /////////////////////////////////////////////
         // 本机自述
         /////////////////////////////////////////////
 
-        case 26:
+        case 26: {
 
             // 首次获得焦点：初始化
             if (PREV_STATE != STATE) {
@@ -1072,10 +905,16 @@ void setup() {
             }
             PREV_STATE = STATE;
 
-            wchar_t readme_buf[128];
+            wchar_t readme_buf[128] = L"Nano-Pod v2512\n电子鹦鹉·端上大模型\n(c) 2025 BD4SUR\n\n";
+            wchar_t status_buf[30];
             // 节流
             if (global_state->timer % 200 == 0) {
-                swprintf(readme_buf, 128, L"Nano-Pod v2512\n电子鹦鹉·端上大模型\n(c) 2025 BD4SUR\n\nUPS:%04dmV/%d%% ", global_state->ups_voltage, global_state->ups_soc);
+#ifdef UPS_ENABLED
+                swprintf(status_buf, 30, L"UPS:%04dmV/%d%% ", global_state->ups_voltage, global_state->ups_soc);
+#else
+                wcscpy(status_buf, L"github.com/bd4sur");
+#endif
+                wcscat(readme_buf, status_buf);
                 wcscpy(widget_textarea_state->text, readme_buf);
                 widget_textarea_state->current_line = 0;
                 widget_textarea_state->is_show_scroll_bar = 0;
@@ -1088,7 +927,7 @@ void setup() {
             }
 
             break;
-
+        }
 
         /////////////////////////////////////////////
         // 关机确认
@@ -1122,7 +961,7 @@ void setup() {
                     widget_textarea_state->is_show_scroll_bar = 0;
                     draw_textarea(key_event, global_state, widget_textarea_state);
 
-                    delayMicroseconds(1000*1000);
+                    sleep_in_ms(1000);
 
                     STATE = -2;
                 }
@@ -1160,7 +999,7 @@ void setup() {
                 widget_textarea_state->is_show_scroll_bar = 0;
                 draw_textarea(key_event, global_state, widget_textarea_state);
 
-                delayMicroseconds(500*1000);
+                sleep_in_ms(500);
 
                 STATE = 5;
             }
@@ -1174,7 +1013,7 @@ void setup() {
                 widget_textarea_state->is_show_scroll_bar = 0;
                 draw_textarea(key_event, global_state, widget_textarea_state);
 
-                delayMicroseconds(500*1000);
+                sleep_in_ms(500);
 
                 STATE = 5;
             }
@@ -1188,7 +1027,7 @@ void setup() {
                 widget_textarea_state->is_show_scroll_bar = 0;
                 draw_textarea(key_event, global_state, widget_textarea_state);
 
-                delayMicroseconds(500*1000);
+                sleep_in_ms(500);
 
                 STATE = 5;
             }
@@ -1225,7 +1064,7 @@ void setup() {
                 widget_textarea_state->is_show_scroll_bar = 0;
                 draw_textarea(key_event, global_state, widget_textarea_state);
 
-                delayMicroseconds(500*1000);
+                sleep_in_ms(500);
 
                 STATE = 5;
             }
@@ -1239,7 +1078,7 @@ void setup() {
                 widget_textarea_state->is_show_scroll_bar = 0;
                 draw_textarea(key_event, global_state, widget_textarea_state);
 
-                delayMicroseconds(500*1000);
+                sleep_in_ms(500);
 
                 STATE = 5;
             }
@@ -1281,7 +1120,6 @@ void setup() {
             // UPS电压和电量
             global_state->ups_voltage = read_ups_voltage();
             global_state->ups_soc = read_ups_soc();
-            // printf("%d mV | %d%%\n", global_state->ups_voltage, global_state->ups_soc);
 #endif
         }
 

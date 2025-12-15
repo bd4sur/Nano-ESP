@@ -28,13 +28,14 @@ extern "C" {
 #define MAX_MENU_ITEM_LEN (24)
 
 typedef struct {
-    int32_t timer;
+    uint64_t timestamp; // 物理时间戳
+    int32_t timer; // 主循环计数器：从0开始递增，不与物理时间关联
     int32_t focus;
     Nano_Session *llm_session; // LLM一轮对话状态
     int32_t llm_status; // LLM推理状态
     int32_t is_asr_server_up;
     int32_t is_recording; // 录音状态
-    time_t asr_start_timestamp; // 录音起始的时间戳
+    uint64_t asr_start_timestamp; // 录音起始的时间戳
 
     int32_t ups_voltage; // UPS电压
     int32_t ups_soc; // UPS电量
@@ -123,6 +124,10 @@ void render_text(
 void show_splash_screen(Key_Event *key_event, Global_State *global_state);
 
 void draw_textarea(Key_Event *key_event, Global_State *global_state, Widget_Textarea_State *textarea_state);
+int32_t textarea_event_handler(
+    Key_Event *ke, Global_State *gs, Widget_Textarea_State *ts,
+    int32_t prev_focus_state, int32_t current_focus_state
+);
 
 void init_input(Key_Event *key_event, Global_State *global_state, Widget_Input_State *input_state);
 void refresh_input(Key_Event *key_event, Global_State *global_state, Widget_Input_State *input_state);
@@ -131,6 +136,10 @@ void draw_input(Key_Event *key_event, Global_State *global_state, Widget_Input_S
 void init_menu(Key_Event *key_event, Global_State *global_state, Widget_Menu_State *menu_state);
 void refresh_menu(Key_Event *key_event, Global_State *global_state, Widget_Menu_State *menu_state);
 void draw_menu(Key_Event *key_event, Global_State *global_state, Widget_Menu_State *menu_state);
+int32_t menu_event_handler(
+    Key_Event *ke, Global_State *gs, Widget_Menu_State *ms,
+    int32_t (*menu_item_action_callback)(int32_t), int32_t prev_focus_state, int32_t current_focus_state
+);
 
 void render_input_buffer(Key_Event *key_event, Global_State *global_state, Widget_Input_State *input_state);
 void render_cursor(Key_Event *key_event, Global_State *global_state, Widget_Input_State *input_state);

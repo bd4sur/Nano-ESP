@@ -11,21 +11,18 @@ extern "C" {
 #include <ctype.h>
 #include <math.h>
 
-#include <stdint.h>
-
-// typedef unsigned int uint32_t;
-// typedef signed int int32_t;
-// typedef unsigned short uint16_t;
-// typedef signed short int16_t;
-// typedef unsigned char uint8_t;
-// typedef signed char int8_t;
-
-#define uint32_t unsigned int
-#define int32_t signed int
-#define uint16_t unsigned short
-#define int16_t signed short
-#define uint8_t unsigned char
-#define int8_t signed char
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
+    #define uint64_t unsigned long long
+    #define int64_t signed long long
+    #define uint32_t unsigned int
+    #define int32_t signed int
+    #define uint16_t unsigned short
+    #define int16_t signed short
+    #define uint8_t unsigned char
+    #define int8_t signed char
+#else
+    #include <stdint.h>
+#endif
 
 // ===============================================================================
 // HashMap
@@ -126,8 +123,8 @@ uint32_t _mbstowcs(wchar_t *dest, const char *src, uint32_t length);
 // 其他平台无关的工具函数
 // ===============================================================================
 
-unsigned int random_u32(unsigned long long *state);
-float random_f32(unsigned long long *state);
+uint32_t random_u32(uint64_t *state);
+float random_f32(uint64_t *state);
 
 
 #ifdef __cplusplus
