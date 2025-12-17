@@ -4,15 +4,22 @@
 #include <Wire.h>
 #include <string.h>
 
+#include <Adafruit_NeoPixel.h>
+
 #include "utils.h"
 #include "model_psycho_230k_1214_q80.h"
 #include "infer.h"
 #include "platform.h"
 
-#define SLAVE_ADDRESS 0x20
-#define TOTAL_BYTES   150
+#define LED_PIN    48
+#define NUMPIXELS  1
+
+Adafruit_NeoPixel pixels(NUMPIXELS, LED_PIN, NEO_GRB + NEO_KHZ800);
+
+#define SLAVE_ADDRESS 0x14
+#define TOTAL_BYTES   160
 #define CHUNK1_SIZE   128
-#define CHUNK2_SIZE   (TOTAL_BYTES - CHUNK1_SIZE) // 22
+#define CHUNK2_SIZE   (TOTAL_BYTES - CHUNK1_SIZE) // 32
 
 // 全局状态枚举
 enum State {
@@ -23,7 +30,7 @@ enum State {
 };
 
 volatile State globalState = READY;
-uint8_t buffer[TOTAL_BYTES];
+volatile uint8_t buffer[TOTAL_BYTES];
 volatile uint8_t chunkIndex = 0; // 0: first chunk, 1: second chunk
 volatile bool receiveComplete = false;
 volatile bool computeComplete = false;
@@ -62,6 +69,10 @@ void setup() {
     globalState == READY;
     computeComplete = false;
 
+    pixels.begin();
+    pixels.setBrightness(64);
+    pixels.clear();
+    pixels.show();
 }
 
 
@@ -85,40 +96,49 @@ void loop() {
 
         // 解析数据帧
         uint8_t op = buffer[0]; // 命令，暂不用
-        uint32_t layer;       memcpy(&layer,       &buffer[1], 4);  // 层序号（0开始）
-        uint32_t pos;         memcpy(&pos,         &buffer[5], 4);  // 序列位置（0开始）
-        uint32_t max_seq_len; memcpy(&max_seq_len, &buffer[9], 4);  // 上下文长度
-        uint32_t n_embd_c;    memcpy(&n_embd_c,    &buffer[13], 4); // 嵌入向量维度（决定了后面数组多长），应等于n_embd
-
-        
-        Serial.print("layer: "); Serial.print(layer); Serial.print("\n");
+        uint32_t layer_from;  memcpy(&layer_from,  &buffer[1], 4);  // 开始层序号（0开始）
+        uint32_t layer_to;    memcpy(&layer_to,    &buffer[5], 4);  // 结束层序号（0开始）
+        uint32_t pos;         memcpy(&pos,         &buffer[9], 4);  // 序列位置（0开始）
+        uint32_t max_seq_len; memcpy(&max_seq_len, &buffer[13], 4); // 上下文长度
+        uint32_t n_embd_c;    memcpy(&n_embd_c,    &buffer[17], 4); // 嵌入向量维度（决定了后面数组多长），应等于n_embd
+/*
+        Serial.print("layer_from: "); Serial.print(layer_from); Serial.print("\n");
+        Serial.print("layer_to: "); Serial.print(layer_to); Serial.print("\n");
         Serial.print("pos: "); Serial.print(pos); Serial.print("\n");
         Serial.print("max_seq_len: "); Serial.print(max_seq_len); Serial.print("\n");
         Serial.print("n_embd: "); Serial.print(n_embd); Serial.print("\n");
-        
-        deserialize_floats(&buffer[17], x, n_embd);
-
+*/
+        deserialize_floats(&buffer[21], x, n_embd);
+/*
         Serial.print("收到的x：");
         for (uint32_t i = 0; i < n_embd; i++) {
             Serial.print(x[i]);
             Serial.print(" ");
         }
         Serial.print("\n");
+*/
+        pixels.fill(pixels.Color(0, 255, 255));
+        pixels.show();
 
-        // 计算本层输出激活值
-        transformer_block_forward(x, layer, pos, max_seq_len, 1, llm, lora);
+        // 计算各层输出激活值
+        for (uint32_t l = layer_from; l <= layer_to; l++) {
+            transformer_block_forward(x, l, pos, max_seq_len, 1, llm, lora);
+        }
+
+        pixels.clear();
+        pixels.show();
 
         // 构建返回数据帧（只修改buffer的第一个字节和数组内容字节，帧头其他字段都不修改，原样返回）
         buffer[0] = 1; // 表示是从机发来的计算结果
-        serialize_floats(x, &buffer[17], n_embd);
-
+        serialize_floats(x, &buffer[21], n_embd);
+/*
         Serial.print("返回的x：");
-        for (uint32_t i = 0; i < n_embd; i++) {
+        for (uint32_t i = 0; i < 10; i++) {
             Serial.print(x[i]);
             Serial.print(" ");
         }
         Serial.print("\n");
-
+*/
         // delay(1000); // 注意：此处阻塞，但I2C onRequest 仍可响应
 
 
@@ -130,7 +150,6 @@ void loop() {
         Serial.println("Processing done.");
     }
 
-    delay(10);
 }
 
 void onReceive(int numBytes) {

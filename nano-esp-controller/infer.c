@@ -908,10 +908,24 @@ float* llm_forward(uint32_t token, uint32_t pos, uint32_t max_seq_len, uint32_t 
     memcpy(x, content_row, n_embd*sizeof(*x));
 
     // 前向传播，遍历各层的Transformer块，以x为层间传递的中间值（原地更新）
-    for(uint64_t l = 0; l < cfg->n_layer; l++) {
+    // for(uint64_t l = 0; l < cfg->n_layer; l++) {
         // transformer_block_forward(x, l, pos, max_seq_len, is_causal, llm, lora);
-        worker(x, l, pos, max_seq_len, n_embd);
-    }
+        // worker(x, l, pos, max_seq_len, n_embd);
+    // }
+
+    int32_t status = 0;
+
+    status = worker(0x11, x, 0, 1, pos, max_seq_len, n_embd);
+    while(status < 0) status = worker(0x11, x, 0, 1, pos, max_seq_len, n_embd); // 出错重试
+
+    status = worker(0x12, x, 2, 3, pos, max_seq_len, n_embd);
+    while(status < 0) status = worker(0x12, x, 2, 3, pos, max_seq_len, n_embd); // 出错重试
+
+    status = worker(0x13, x, 4, 5, pos, max_seq_len, n_embd);
+    while(status < 0) status = worker(0x13, x, 4, 5, pos, max_seq_len, n_embd); // 出错重试
+
+    status = worker(0x14, x, 6, 7, pos, max_seq_len, n_embd);
+    while(status < 0) status = worker(0x14, x, 6, 7, pos, max_seq_len, n_embd); // 出错重试
 
     // 最后一层RMSNorm
     rmsnorm(x, x, w->rms_norm_final, n_embd);

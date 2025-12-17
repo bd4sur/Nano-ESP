@@ -13,7 +13,7 @@ void print_float(float i);
 
 void *psram_calloc(size_t n, size_t sizeoftype);
 
-void worker(float *x, uint32_t layer, uint32_t pos, uint32_t max_seq_len, uint32_t n_embd);
+int32_t worker(uint8_t worker_i2c_addr, float *x, uint32_t layer_from, uint32_t layer_to, uint32_t pos, uint32_t max_seq_len, uint32_t n_embd);
 
 #ifdef __cplusplus
 }
