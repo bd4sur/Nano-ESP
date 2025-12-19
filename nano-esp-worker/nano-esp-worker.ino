@@ -17,9 +17,10 @@
 Adafruit_NeoPixel pixels(NUMPIXELS, LED_PIN, NEO_GRB + NEO_KHZ800);
 
 #define SLAVE_ADDRESS 0x14
-#define TOTAL_BYTES   160
-#define CHUNK1_SIZE   128
-#define CHUNK2_SIZE   (TOTAL_BYTES - CHUNK1_SIZE) // 32
+
+#define CHUNK_BYTES   (128)
+#define TOTAL_BYTES   (CHUNK_BYTES * 2)
+
 
 // 全局状态枚举
 enum State {
@@ -30,7 +31,7 @@ enum State {
 };
 
 volatile State globalState = READY;
-volatile uint8_t buffer[TOTAL_BYTES];
+uint8_t buffer[TOTAL_BYTES];
 volatile uint8_t chunkIndex = 0; // 0: first chunk, 1: second chunk
 volatile bool receiveComplete = false;
 volatile bool computeComplete = false;
@@ -70,7 +71,7 @@ void setup() {
     computeComplete = false;
 
     pixels.begin();
-    pixels.setBrightness(64);
+    pixels.setBrightness(255);
     pixels.clear();
     pixels.show();
 }
@@ -81,6 +82,9 @@ void loop() {
         // 开始处理
         globalState = PROCESSING;
         Serial.println("Processing data...");
+
+
+        uint64_t t0 = micros();
 
 
         LLM *llm = g_llm_ctx->llm;
@@ -95,28 +99,17 @@ void loop() {
 
 
         // 解析数据帧
-        uint8_t op = buffer[0]; // 命令，暂不用
-        uint32_t layer_from;  memcpy(&layer_from,  &buffer[1], 4);  // 开始层序号（0开始）
-        uint32_t layer_to;    memcpy(&layer_to,    &buffer[5], 4);  // 结束层序号（0开始）
-        uint32_t pos;         memcpy(&pos,         &buffer[9], 4);  // 序列位置（0开始）
-        uint32_t max_seq_len; memcpy(&max_seq_len, &buffer[13], 4); // 上下文长度
-        uint32_t n_embd_c;    memcpy(&n_embd_c,    &buffer[17], 4); // 嵌入向量维度（决定了后面数组多长），应等于n_embd
-/*
-        Serial.print("layer_from: "); Serial.print(layer_from); Serial.print("\n");
-        Serial.print("layer_to: "); Serial.print(layer_to); Serial.print("\n");
-        Serial.print("pos: "); Serial.print(pos); Serial.print("\n");
-        Serial.print("max_seq_len: "); Serial.print(max_seq_len); Serial.print("\n");
-        Serial.print("n_embd: "); Serial.print(n_embd); Serial.print("\n");
-*/
-        deserialize_floats(&buffer[21], x, n_embd);
-/*
-        Serial.print("收到的x：");
-        for (uint32_t i = 0; i < n_embd; i++) {
-            Serial.print(x[i]);
-            Serial.print(" ");
-        }
-        Serial.print("\n");
-*/
+        uint32_t op;          memcpy(&op,          &buffer[0], 4);  // 命令，暂不用
+        uint32_t layer_from;  memcpy(&layer_from,  &buffer[4], 4);  // 开始层序号（0开始）
+        uint32_t layer_to;    memcpy(&layer_to,    &buffer[8], 4);  // 结束层序号（0开始）
+        uint32_t pos;         memcpy(&pos,         &buffer[12], 4);  // 序列位置（0开始）
+        uint32_t max_seq_len; memcpy(&max_seq_len, &buffer[16], 4); // 上下文长度
+        uint32_t res_1;       memcpy(&res_1,       &buffer[20], 4); // 保留字段
+        uint32_t delay_ms;    memcpy(&delay_ms,    &buffer[24], 4); // 计算耗时ms
+        uint32_t n_embd_c;    memcpy(&n_embd_c,    &buffer[28], 4); // 嵌入向量维度（决定了后面数组多长），应等于n_embd
+
+        deserialize_floats(&buffer[32], x, n_embd);
+
         pixels.fill(pixels.Color(0, 255, 255));
         pixels.show();
 
@@ -128,19 +121,15 @@ void loop() {
         pixels.clear();
         pixels.show();
 
-        // 构建返回数据帧（只修改buffer的第一个字节和数组内容字节，帧头其他字段都不修改，原样返回）
-        buffer[0] = 1; // 表示是从机发来的计算结果
-        serialize_floats(x, &buffer[21], n_embd);
-/*
-        Serial.print("返回的x：");
-        for (uint32_t i = 0; i < 10; i++) {
-            Serial.print(x[i]);
-            Serial.print(" ");
-        }
-        Serial.print("\n");
-*/
-        // delay(1000); // 注意：此处阻塞，但I2C onRequest 仍可响应
+        uint64_t t1 = micros();
+        delay_ms = (uint32_t)((t1 - t0) / 1000) + 3;
+        Serial.println(delay_ms);
 
+        // 构建返回数据帧
+        op = 1;
+        memcpy(&buffer[0], &op, sizeof(uint32_t));
+        memcpy(&buffer[24], &delay_ms, sizeof(uint32_t));
+        serialize_floats(x, &buffer[32], n_embd);
 
 
         globalState = READY;
@@ -163,21 +152,21 @@ void onReceive(int numBytes) {
         globalState = RECEIVING;
 
         if (chunkIndex == 0) {
-            // 接收第一包（128字节）
-            if (numBytes != CHUNK1_SIZE) {
+            // 接收第一包
+            if (numBytes != CHUNK_BYTES) {
                 Serial.println("Error: First chunk size mismatch!");
                 return;
             }
-            Wire.readBytes(buffer, CHUNK1_SIZE);
+            Wire.readBytes(buffer, CHUNK_BYTES);
             chunkIndex = 1;
         }
         else if (chunkIndex == 1) {
-            // 接收第二包（22字节）
-            if (numBytes != CHUNK2_SIZE) {
+            // 接收第二包
+            if (numBytes != CHUNK_BYTES) {
                 Serial.println("Error: Second chunk size mismatch!");
                 return;
             }
-            Wire.readBytes(buffer + CHUNK1_SIZE, CHUNK2_SIZE);
+            Wire.readBytes(buffer + CHUNK_BYTES, CHUNK_BYTES);
             receiveComplete = true;
             globalState = RECEIVED;
             Serial.println("Full message received.");
@@ -193,11 +182,11 @@ void onRequest() {
     else if (globalState == READY) {
         if (computeComplete) {
             if (chunkIndex == 0) {
-                Wire.write(buffer, CHUNK1_SIZE);
+                Wire.write(buffer, CHUNK_BYTES);
                 chunkIndex = 1;
             }
             else if (chunkIndex == 1) {
-                Wire.write(buffer + CHUNK1_SIZE, CHUNK2_SIZE);
+                Wire.write(buffer + CHUNK_BYTES, CHUNK_BYTES);
                 chunkIndex = 0;
                 computeComplete = false;
             }
