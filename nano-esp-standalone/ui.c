@@ -6,7 +6,10 @@
 #include "ui.h"
 
 #include "platform.h"
-#include "arduino_wrapper.h"
+
+#ifdef BADAPPLE_ENABLED
+    #include "badapple.h"
+#endif
 
 #define IME_HANZI_NUM 7081
 
@@ -26,6 +29,10 @@ static wchar_t ime_symbols[55] = L"，。、？！：；“”‘’（）《》
 // 按键对应的字母列表
 static wchar_t ime_alphabet[10][32] = {L"0", L" 1.,:?!-/+_=&\"*", L"abcABC2", L"defDEF3", L"ghiGHI4", L"jklJKL5", L"mnoMNO6", L"pqrsPRQS7", L"tuvTUV8", L"wxyzWXYZ9"};
 
+// 带四舍五入的整数除法，仅接受正数
+static inline uint32_t div_round(uint32_t a, uint32_t b) {
+    return (a + b / 2) / b;
+}
 
 void get_candidate_hanzi_list(Widget_Input_State *input_state) {
     unsigned int candidate_index[500];
@@ -64,84 +71,74 @@ void candidate_paging(Widget_Input_State *input_state) {
 
 // 在文本框的光标位置之后插入一个字符
 void insert_char(Widget_Input_State *input_state, wchar_t new_char) {
-    if (input_state->length + 1 > INPUT_BUFFER_LENGTH) {
+    if (input_state->textarea.length + 1 > INPUT_BUFFER_LENGTH) {
         return;
     }
 
-    input_state->text[input_state->length + 1] = L'\0';
+    input_state->textarea.text[input_state->textarea.length + 1] = L'\0';
 
-    for (uint32_t i = input_state->length; i >= input_state->cursor_pos + 2; i--) {
-        input_state->text[i] = input_state->text[i-1];
+    for (uint32_t i = input_state->textarea.length; i >= input_state->cursor_pos + 2; i--) {
+        input_state->textarea.text[i] = input_state->textarea.text[i-1];
     }
-    input_state->text[input_state->cursor_pos + 1] = new_char;
+    input_state->textarea.text[input_state->cursor_pos + 1] = new_char;
 
     input_state->cursor_pos++;
-    input_state->length++;
+    input_state->textarea.length++;
 }
 
 // 删除光标位置的字符（即光标竖线左边的一个字符）
 void delete_char(Widget_Input_State *input_state) {
-    if (input_state->length <= 0 || input_state->cursor_pos < 0) {
+    if (input_state->textarea.length <= 0 || input_state->cursor_pos < 0) {
         return;
     }
 
-    for (uint32_t i = input_state->cursor_pos; i < input_state->length; i++) {
-        input_state->text[i] = input_state->text[i+1];
+    for (uint32_t i = input_state->cursor_pos; i < input_state->textarea.length; i++) {
+        input_state->textarea.text[i] = input_state->textarea.text[i+1];
     }
-    input_state->text[input_state->length - 1] = L'\0';
+    input_state->textarea.text[input_state->textarea.length - 1] = L'\0';
 
     input_state->cursor_pos--;
-    input_state->length--;
+    input_state->textarea.length--;
 }
 
 
 
-void text_typeset(
-    int32_t is_full,         // in  全量排版？0-仅计算翻页；1-先计算全部换行，再计算翻页
-    wchar_t *text,          // in  待排版的文本
-    int32_t view_width,      // in  视图宽度
-    int32_t view_height,     // in  视图高度
-    int32_t start_line,      // in  从哪行开始显示（用于滚动）
-    int32_t *length,         // (in if is_full else out) 文本长度（字符数）
-    int32_t *break_pos,      // (in if is_full else out) 折行位置（每行第一个字符的index）数组
-    int32_t *line_num,       // (in if is_full else out) 可见行数
-    int32_t *view_lines,     // out 可见行数
-    int32_t *view_start_pos, // out 可见区域第一个字符的index
-    int32_t *view_end_pos    // out 可见区域最后一个字符的index
-) {
-    int32_t char_count = 0;
+// 排版-折行（高代价）：计算全部文本的length(char_count)、line_num(break_count)、break_pos
+void typeset_line_breaks(Widget_Textarea_State *textarea_state) {
     int32_t break_count = 0;
     int32_t line_x_pos = 0;
-
-    // 全量排版：计算全部文本的length(char_count)、line_num(break_count)、break_pos
-    if (is_full) {
-        for (char_count = 0; char_count < wcslen(text); char_count++) {
-            wchar_t ch = text[char_count];
-            int32_t char_width = (ch < 127) ? ((ch == '\n') ? 0 : FONT_WIDTH_HALF) : FONT_WIDTH_FULL;
-            if (char_count == 0 || line_x_pos + char_width >= view_width) {
-                break_pos[break_count] = char_count;
-                break_count++;
-                line_x_pos = 0;
-            }
-            else if (ch == '\n') {
-                break_pos[break_count] = char_count + 1;
-                break_count++;
-                line_x_pos = 0;
-            }
-            line_x_pos += char_width;
+    int32_t char_count = 0;
+    for (char_count = 0; char_count < wcslen(textarea_state->text); char_count++) {
+        wchar_t ch = textarea_state->text[char_count];
+        int32_t char_width = (ch < 127) ? ((ch == '\n') ? 0 : FONT_WIDTH_HALF) : FONT_WIDTH_FULL;
+        if (char_count == 0 || line_x_pos + char_width >= textarea_state->width) {
+            textarea_state->break_pos[break_count] = char_count;
+            break_count++;
+            line_x_pos = 0;
         }
-
-        *line_num = (break_count <= 0) ? 1 : break_count;
-        *length = char_count;
+        else if (ch == '\n') {
+            textarea_state->break_pos[break_count] = char_count + 1;
+            break_count++;
+            line_x_pos = 0;
+        }
+        line_x_pos += char_width;
     }
+    textarea_state->line_num = (break_count <= 0) ? 1 : break_count;
+    textarea_state->length = char_count;
+}
 
-    // 计算当前视图最大能容纳的行数。
+
+// 排版-视口（低代价）：给定起始行号和视口宽高，计算视口内文本的index和最大能容纳的行数
+void typeset_view_range(Widget_Textarea_State *textarea_state) {
+    int32_t view_height = textarea_state->height;
     //   NOTE 考虑到行间距为1，且末行以下无间距，因此分子加1以去除末行无间距的影响。
     //        例如，高度为64的屏幕，实际可容纳(64+1)/(12+1)=5行。
     int32_t max_view_lines = (view_height + 1) / (FONT_HEIGHT + 1);
-    int32_t _line_num = *line_num;
+    int32_t _line_num = textarea_state->line_num;
 
-    *view_lines = max_view_lines;
+    textarea_state->view_lines = max_view_lines;
+
+    int32_t start_line = textarea_state->current_line;
 
     // 对start_line的检查和标准化
     if (start_line < 0) {
@@ -166,81 +163,44 @@ void text_typeset(
 
     // 情况1：start_line介于首行（0）和（使得末行进入可见区域以下1行的位置），即视图内不包含末行
     if (start_line < _line_num - max_view_lines) {
-        *view_start_pos = break_pos[start_line];
-        *view_end_pos = break_pos[start_line + max_view_lines] - 1;
+        textarea_state->view_start_pos = textarea_state->break_pos[start_line];
+        textarea_state->view_end_pos = textarea_state->break_pos[start_line + max_view_lines] - 1;
     }
     // 情况2：start_line等于或超过了（使得末行恰好位于可见区域底行的位置），但尚未超出末行，也就是末行位于视图内
     //        若文本行数不大于视图行数，则一定满足此条件。
     else if (start_line >= _line_num - max_view_lines && start_line < _line_num) {
-        *view_start_pos = break_pos[start_line];
-        *view_end_pos = *length - 1;
+        textarea_state->view_start_pos = textarea_state->break_pos[start_line];
+        textarea_state->view_end_pos = textarea_state->length - 1;
     }
 }
 
 
-// 渲染一行文本，mode为1则为正显，为0则为反白
-void render_line(wchar_t *line, uint32_t x, uint32_t y, uint8_t mode) {
-    uint32_t x_pos = x;
-    uint32_t y_pos = y;
-    for (uint32_t i = 0; i < wcslen(line); i++) {
-        uint32_t current_char = line[i];
-        uint8_t font_width = 12;
-        uint8_t font_height = 12;
-        uint8_t *glyph = get_glyph(current_char, &font_width, &font_height);
-        if (!glyph) {
-            printf("出现了字库之外的字符！\n");
-            break;
-        }
-        if (x_pos + font_width >= 128) {
-            break;
-        }
-        // NOTE 反色显示时，在每个字符场面额外补充一条线，避免菜单中高亮区域看起来顶格
-        fb_draw_line(x_pos, y_pos - 1, x_pos+font_width-1, y_pos - 1, 1 - (mode % 2));
-        fb_draw_char(x_pos, y_pos, glyph, font_width, font_height, (mode % 2));
-        x_pos += font_width;
-    }
-}
+void render_text(Widget_Textarea_State *textarea_state) {
+    int x_pos = textarea_state->x;
+    int y_pos = textarea_state->y;
 
-// 返回值：文本折行后的行数（含换行符）
-void render_text(
-    wchar_t *text, int32_t start_line, int32_t length, int32_t *break_pos, int32_t line_num,
-    int32_t x_offset, int32_t y_offset, int32_t width, int32_t height,
-    int32_t is_full_typeset)
-{
-    int32_t view_lines = 0;
-    int32_t view_start_pos = 0;
-    int32_t view_end_pos = 0;
-
-    text_typeset(is_full_typeset, text, width, height, start_line, &length, break_pos, &line_num, &view_lines, &view_start_pos, &view_end_pos);
-
-    int x_pos = x_offset;
-    int y_pos = y_offset;
-
-    for (int i = view_start_pos; i <= view_end_pos; i++) {
-        uint32_t current_char = text[i];
+    for (int i = textarea_state->view_start_pos; i <= textarea_state->view_end_pos; i++) {
+        uint32_t current_char = textarea_state->text[i];
         if (!current_char) break;
         uint8_t font_width = FONT_WIDTH_FULL;
         uint8_t font_height = FONT_HEIGHT;
         if (current_char == '\n') {
-            x_pos = x_offset;
+            x_pos = textarea_state->x;
             if(i > 0) y_pos += (font_height + 1);
             continue;
         }
         uint8_t *glyph = get_glyph(current_char, &font_width, &font_height);
         if (!glyph) {
-            printf("出现了字库之外的字符[%d]\n", current_char);
+            // printf("出现了字库之外的字符[%d]\n", current_char);
             glyph = get_glyph(12307, &font_width, &font_height); // 用字脚符号“〓”代替，参考https://ja.wikipedia.org/wiki/下駄記号
         }
-        if (x_pos + font_width >= x_offset + width) {
+        if (x_pos + font_width >= textarea_state->x + textarea_state->width) {
             y_pos += (font_height + 1);
-            x_pos = x_offset;
+            x_pos = textarea_state->x;
         }
         fb_draw_char(x_pos, y_pos, glyph, font_width, font_height, 1);
         x_pos += font_width;
     }
-
-    // free(wrapped);
-    // free(wrapped_clipped);
 }
 
 // 绘制滚动条
@@ -277,12 +237,15 @@ void render_scroll_bar(int32_t current_line, int32_t line_num, int32_t view_line
     line_num = (line_num <= 0) ? 1 : line_num;
 
     // 如果总行数装不满视图，则滚动条长度等于视图高度height
-    uint8_t bar_height = (line_num < view_lines) ? (uint8_t)(height) : (uint8_t)((view_lines * height) / line_num);
-    // 进度条高度不小于3px
-    bar_height = (bar_height < 3) ? 3 : bar_height;
-    uint8_t y_0 = (uint8_t)(y + (current_line * height) / line_num);
-    fb_draw_line(x + width - 1, y_0, x + width - 1, y_0 + bar_height + 1, 1);
-    fb_draw_line(x + width - 2, y_0, x + width - 2, y_0 + bar_height + 1, 1);
+    int32_t bar_height = (line_num < view_lines) ? (height) : div_round((view_lines * height), line_num);
+    bar_height = (bar_height < 3) ? 3 : bar_height; // 滚动条高度不小于3px
+
+    // 滚动条顶部y坐标
+    int32_t y_0 = y + div_round(current_line * height, line_num);
+    y_0 = (y_0 >= y + height - 3 - 1) ? (y + height - 3 - 1) : y_0; // 滚动条顶部限位（不低于底部上方3px）
+
+    fb_draw_line(x + width - 1, (uint8_t)y_0, x + width - 1, (uint8_t)(y_0 + bar_height), 1);
+    fb_draw_line(x + width - 2, (uint8_t)y_0, x + width - 2, (uint8_t)(y_0 + bar_height), 1);
 }
 
 
@@ -290,7 +253,41 @@ void render_scroll_bar(int32_t current_line, int32_t line_num, int32_t view_line
 
 
 
+// 绘制点阵的版权信息
+//   点阵数据通过bd4sur.com/html/am32.html取得
+void draw_copyright_notice(uint32_t x_offset, uint32_t y_offset) {
+    uint32_t callsign[5]  = {3876120944, 2493057352, 3836266864, 2495359312, 3876177480}; // BD4SUR, width=29
+    uint32_t year_2025[5] = {1662631936, 2493841408, 613010944, 1150296064, 4080910336};  // 2025-, width=23
+    uint32_t year_2026[5] = {1662566400, 2493841408, 613007360, 1150361600, 4080844800};  // 2026, width=19
+    uint32_t copy_mark[7] = {2013265920, 2214592512, 3019898880, 2751463424, 3019898880, 2214592512, 2013265920}; // (c), width=6
 
+    uint32_t x = x_offset;
+
+    for (uint32_t i = 0; i < 7; i++) {
+        for (uint32_t j = 0; j < 32; j++) {
+            fb_plot((uint8_t)(x + j), (uint8_t)(y_offset + i), (copy_mark[i] >> (32 - 1 - j)) & 0x1);
+        }
+    }
+    x += (6 + 4);
+    for (uint32_t i = 0; i < 5; i++) {
+        for (uint32_t j = 0; j < 32; j++) {
+            fb_plot((uint8_t)(x + j), (uint8_t)(y_offset + 1 + i), (year_2025[i] >> (32 - 1 - j)) & 0x1);
+        }
+    }
+    x += (23 + 1);
+    for (uint32_t i = 0; i < 5; i++) {
+        for (uint32_t j = 0; j < 32; j++) {
+            fb_plot((uint8_t)(x + j), (uint8_t)(y_offset + 1 + i), (year_2026[i] >> (32 - 1 - j)) & 0x1);
+        }
+    }
+    x += (19 + 4);
+    for (uint32_t i = 0; i < 5; i++) {
+        for (uint32_t j = 0; j < 32; j++) {
+            fb_plot((uint8_t)(x + j), (uint8_t)(y_offset + 1 + i), (callsign[i] >> (32 - 1 - j)) & 0x1);
+        }
+    }
+
+}
 
 
 void show_splash_screen(Key_Event *key_event, Global_State *global_state) {
@@ -301,9 +298,9 @@ void show_splash_screen(Key_Event *key_event, Global_State *global_state) {
     }
 
 #if CONFIG_IDF_TARGET_ESP32S3
-    render_line(L"Project Nano", 28, 2, 0);
-    render_line(L"电子鹦鹉@ESP32S3", 16, 20, 1);
-    render_line(L"(c) 2025 BD4SUR", 18, 50, 1);
+    fb_draw_textline(L"Project Nano", 28, 2, 0);
+    fb_draw_textline(L"电子鹦鹉@ESP32S3", 16, 20, 1);
+    draw_copyright_notice(20, 53);
 #else
     time_t rawtime;
     struct tm *timeinfo;
@@ -315,10 +312,10 @@ void show_splash_screen(Key_Event *key_event, Global_State *global_state) {
     strftime(datetime_string_buffer, sizeof(datetime_string_buffer), "%Y-%m-%d %H:%M:%S", timeinfo); // 格式化输出
     _mbstowcs(datetime_wcs_buffer, datetime_string_buffer, 80);
 
-    render_line(L"Project Nano", 28, 2, 0);
-    render_line(L"电子鹦鹉@ESP32P4", 16, 20, 1);
-    render_line(datetime_wcs_buffer, 8, 34, 1);
-    render_line(L"(c) 2025 BD4SUR", 18, 50, 1);
+    fb_draw_textline(L"Project Nano", 28, 2, 0);
+    fb_draw_textline(L"电 子 鹦 鹉", 31, 20, 1);
+    fb_draw_textline(datetime_wcs_buffer, 8, 35, 1);
+    draw_copyright_notice(20, 53);
 #endif
 
     fb_draw_line(0, 0, 127, 0, 1);
@@ -358,32 +355,75 @@ void show_splash_screen(Key_Event *key_event, Global_State *global_state) {
 }
 
 
+void play_bad_apple(Key_Event *key_event, Global_State *global_state) {
+#ifdef BADAPPLE_ENABLED
+    if (global_state->timestamp - global_state->ba_begin_timestamp >= 100 * global_state->ba_frame_count) {
+        fb_soft_clear();
+        for (uint32_t row = 0; row < 64; row++) {
+            uint32_t page_0 = bad_apple_10fps_64x64[global_state->ba_frame_count * 128 + row * 2];
+            uint32_t page_1 = bad_apple_10fps_64x64[global_state->ba_frame_count * 128 + row * 2 + 1];
+            for (uint32_t col = 0; col < 32; col++) {
+                fb_plot(col + 32, row, (page_0 >> (32 - 1 - col)) & 0x1);
+            }
+            for (uint32_t col = 32; col < 64; col++) {
+                fb_plot(col + 32, row, (page_1 >> (32 - 1 - (col-32))) & 0x1);
+            }
+        }
+        gfx_refresh();
+        global_state->ba_frame_count++;
+
+        if (global_state->ba_frame_count > 2193) {
+            global_state->ba_frame_count = 0;
+            global_state->ba_begin_timestamp = global_state->timestamp;
+        }
+    }
+#endif
+}
 
 
 
+
+
+
+
+void init_textarea(Key_Event *key_event, Global_State *global_state, Widget_Textarea_State *textarea_state,
+    uint32_t max_len) {
+    textarea_state->state = 0;
+    textarea_state->x = 0;
+    textarea_state->y = 0;
+    textarea_state->width = 128;
+    textarea_state->height = 64;
+    textarea_state->length = 0;
+    textarea_state->line_num = 0;
+    textarea_state->view_lines = 0;
+    textarea_state->view_start_pos = 0;
+    textarea_state->view_end_pos = 0;
+    textarea_state->current_line = 0;
+    textarea_state->is_show_scroll_bar = 1;
+    textarea_state->is_modified = 1;
+    textarea_state->text = (wchar_t*)calloc(max_len, sizeof(wchar_t));
+    textarea_state->break_pos = (int32_t*)calloc(max_len, sizeof(int32_t));
+}
+
+void set_textarea(Key_Event *key_event, Global_State *global_state, Widget_Textarea_State *textarea_state,
+    wchar_t *text, int32_t current_line, int32_t is_show_scroll_bar) {
+    textarea_state->is_modified = 1;
+    textarea_state->current_line = current_line;
+    textarea_state->is_show_scroll_bar = is_show_scroll_bar;
+    wcscpy(textarea_state->text, text);
+}
 
 void draw_textarea(Key_Event *key_event, Global_State *global_state, Widget_Textarea_State *textarea_state) {
-    text_typeset(
-        1,
-        textarea_state->text,
-        textarea_state->width,
-        textarea_state->height,
-        textarea_state->current_line,
-        &(textarea_state->length),
-        textarea_state->break_pos,
-        &(textarea_state->line_num),
-        &(textarea_state->view_lines),
-        &(textarea_state->view_start_pos),
-        &(textarea_state->view_end_pos)
-    );
+    if (textarea_state->is_modified) {
+        typeset_line_breaks(textarea_state);
+    }
+    typeset_view_range(textarea_state);
 
     if (global_state->is_full_refresh) {
         fb_soft_clear();
     }
 
-    render_text(
-        textarea_state->text, textarea_state->current_line, textarea_state->length, textarea_state->break_pos, textarea_state->line_num,
-        textarea_state->x, textarea_state->y, textarea_state->width, textarea_state->height, 0);
+    render_text(textarea_state);
 
     if (textarea_state->is_show_scroll_bar) {
         render_scroll_bar(
@@ -415,7 +455,9 @@ int32_t textarea_event_handler(
             ts->current_line--;
         }
 
+        ts->is_modified = 0;
         draw_textarea(ke, gs, ts);
+        ts->is_modified = 1;
 
         return current_focus_state;
     }
@@ -429,7 +471,9 @@ int32_t textarea_event_handler(
             ts->current_line++;
         }
 
+        ts->is_modified = 0;
         draw_textarea(ke, gs, ts);
+        ts->is_modified = 1;
 
         return current_focus_state;
     }
@@ -444,21 +488,17 @@ int32_t textarea_event_handler(
 
 
 void init_input(Key_Event *key_event, Global_State *global_state, Widget_Input_State *input_state) {
-    input_state->state = 0;
+    Widget_Textarea_State *ta = &(input_state->textarea);
 
-    input_state->x = 0;
-    input_state->y = 13;
-    input_state->width = 128;
-    input_state->height = 51; // NOTE 详见结构体定义处的说明
-    // input_state->text[INPUT_BUFFER_LENGTH];
-    input_state->length = 0;
-    // input_state->break_pos[INPUT_BUFFER_LENGTH];
-    input_state->line_num = 0;
-    input_state->view_lines = 0;
-    input_state->view_start_pos = 0;
-    input_state->view_end_pos = 0;
-    input_state->current_line = 0;
-    input_state->is_show_scroll_bar = 1;
+    init_textarea(key_event, global_state, ta, INPUT_BUFFER_LENGTH);
+
+    ta->state = 0;
+    ta->x = 0;
+    ta->y = 13;
+    ta->width = 128;
+    ta->height = 51; // NOTE 详见结构体定义处的说明
+    ta->length = 0;
+    ta->is_show_scroll_bar = 1;
 
     input_state->cursor_pos = -1;
     input_state->ime_mode_flag = IME_MODE_HANZI;
@@ -466,13 +506,12 @@ void init_input(Key_Event *key_event, Global_State *global_state, Widget_Input_S
     input_state->candidate_num = 0;
     input_state->candidate_page_num = 0;
     input_state->current_page = 0;
-    input_state->alphabet_countdown = -1;
+    input_state->alphabet_click_timestamp = 0;
+    input_state->alphabet_is_counting_down = 0;
     input_state->alphabet_current_key = 255;
     input_state->alphabet_index = 0;
 
     // 初始化各个数组
-    wcscpy(input_state->text, L"");
-    memset(input_state->break_pos, 0, sizeof(input_state->break_pos));
     memset(input_state->candidates, 0, sizeof(input_state->candidates));
     memset(input_state->candidate_pages, 0, sizeof(input_state->candidate_pages));
 
@@ -480,37 +519,39 @@ void init_input(Key_Event *key_event, Global_State *global_state, Widget_Input_S
 }
 
 void refresh_input(Key_Event *key_event, Global_State *global_state, Widget_Input_State *input_state) {
-    input_state->cursor_pos = input_state->length - 1;
+    input_state->cursor_pos = input_state->textarea.length - 1;
     render_input_buffer(key_event, global_state, input_state);
 }
 
-void draw_input(Key_Event *key_event, Global_State *global_state, Widget_Input_State *input_state) {
+int32_t input_event_handler(
+    Key_Event *key_event, Global_State *global_state, Widget_Input_State *input_state,
+    int32_t prev_focus_state, int32_t current_focus_state, int32_t next_focus_state
+) {
 
     int32_t state = input_state->state;
 
     // 定时器触发：字母输入的倒计时进度条
-    if (input_state->ime_mode_flag == IME_MODE_ALPHABET) {
+    if (input_state->ime_mode_flag == IME_MODE_ALPHABET && input_state->alphabet_is_counting_down == 1) {
+        uint64_t ctimestamp = global_state->timestamp;
         // 倒计时进行中，绘制进度条
-        if (input_state->alphabet_countdown > 0) {
-            input_state->alphabet_countdown--;
-            uint8_t x_pos = (uint8_t)(input_state->alphabet_countdown * 128 / ALPHABET_COUNTDOWN_MAX);
+        if (ctimestamp - input_state->alphabet_click_timestamp <= ALPHABET_COUNTDOWN_MS) {
+            uint8_t x_pos = (uint8_t)((ALPHABET_COUNTDOWN_MS - ctimestamp + input_state->alphabet_click_timestamp) * 128 / ALPHABET_COUNTDOWN_MS);
             fb_draw_line(0, 63, x_pos, 63, 1);
             fb_draw_line(x_pos + 1, 63, 127, 63, 0);
             gfx_refresh();
             input_state->state = 0;
         }
         // 倒计时结束，提交当前选中的字母，清除进度条
-        else if (input_state->alphabet_countdown == 0) {
+        else {
+            input_state->alphabet_is_counting_down = 0;
+
             // 清除进度条
-            input_state->alphabet_countdown--;
             fb_draw_line(0, 63, 127, 63, 0);
             gfx_refresh();
 
             // 将当前选中的字母加入输入缓冲区
             uint32_t ch = ime_alphabet[(int)(input_state->alphabet_current_key)][input_state->alphabet_index];
             if (ch) {
-                // input_state->text[input_state->length++] = ch;
-                // input_state->cursor_pos++;
                 insert_char(input_state, ch);
             }
             else {
@@ -560,8 +601,9 @@ void draw_input(Key_Event *key_event, Global_State *global_state, Widget_Input_S
             if (input_state->ime_mode_flag == IME_MODE_HANZI) {
                 if (key_event->key_code >= 2 && key_event->key_code <= 9) { // 仅响应按键2-9；1无动作
                     input_state->state = 1;
-                    // goto STATE_1;
-                    draw_input(key_event, global_state, input_state);
+                    input_event_handler(
+                        key_event, global_state, input_state,
+                        prev_focus_state, current_focus_state, next_focus_state);
                 }
             }
             else if (input_state->ime_mode_flag == IME_MODE_NUMBER) {
@@ -573,14 +615,16 @@ void draw_input(Key_Event *key_event, Global_State *global_state, Widget_Input_S
             }
             else if (input_state->ime_mode_flag == IME_MODE_ALPHABET) {
                 // 如果按键按下时，不是字母切换状态，则开始循环切换，并开始倒计时。
-                if (input_state->alphabet_countdown == -1) {
-                    input_state->alphabet_countdown = ALPHABET_COUNTDOWN_MAX;
+                if (input_state->alphabet_is_counting_down == 0) {
+                    input_state->alphabet_is_counting_down = 1;
+                    input_state->alphabet_click_timestamp = global_state->timestamp;
                     input_state->alphabet_current_key = key_event->key_code;
                     input_state->alphabet_index = 0;
                 }
                 // 如果按键按下时，倒计时尚未结束，则切换到下一个字母。
-                else if (input_state->alphabet_countdown > 0) {
-                    input_state->alphabet_countdown = ALPHABET_COUNTDOWN_MAX;
+                else {
+                    input_state->alphabet_is_counting_down = 1;
+                    input_state->alphabet_click_timestamp = global_state->timestamp;
                     input_state->alphabet_current_key = key_event->key_code;
                     input_state->alphabet_index = (input_state->alphabet_index + 1) % wcslen(ime_alphabet[(int)(key_event->key_code)]);
                 }
@@ -590,7 +634,7 @@ void draw_input(Key_Event *key_event, Global_State *global_state, Widget_Input_S
                 uint32_t x_pos = 1;
                 for (int i = 0; i < wcslen(ime_alphabet[(int)(key_event->key_code)]); i++) {
                     letter[0] = ime_alphabet[(int)(key_event->key_code)][i]; letter[1] = 0;
-                    render_line(letter, x_pos, 50, (i != input_state->alphabet_index));
+                    fb_draw_textline(letter, x_pos, 50, (i != input_state->alphabet_index));
                     x_pos += 8;
                 }
 
@@ -598,15 +642,25 @@ void draw_input(Key_Event *key_event, Global_State *global_state, Widget_Input_S
             }
         }
 
-        // 长+短按A键：删除一个字符；如果输入缓冲区为空，则回到主菜单（在焦点转换部分处理）
+        // 长+短按A键：删除一个字符，或返回上一个状态，取决于缓冲区状态和Ctrl状态
         else if ((key_event->key_edge == -1 || key_event->key_edge == -2) && key_event->key_code == 10) {
-            if (input_state->length >= 1) {
+            input_state->state = 0;
+            // 如果缓冲区非空且非Ctrl状态，则删除一个字符
+            if (global_state->is_ctrl_enabled == 0 && input_state->textarea.length >= 1) {
                 // input_state->text[--(input_state->length)] = 0;
                 // input_state->cursor_pos--;
                 delete_char(input_state);
                 render_input_buffer(key_event, global_state, input_state);
             }
-            input_state->state = 0;
+            // 如果缓冲区空，或者是Ctrl状态，则清空缓冲区，回到上一个状态
+            else {
+                // 重置Ctrl状态
+                if (global_state->is_ctrl_enabled == 1) {
+                    global_state->is_ctrl_enabled = 0;
+                }
+                init_input(key_event, global_state, input_state);
+                return prev_focus_state;
+            }
         }
 
         // 长+短按B键：依次切换汉-英-数输入模式
@@ -614,6 +668,19 @@ void draw_input(Key_Event *key_event, Global_State *global_state, Widget_Input_S
             input_state->ime_mode_flag = (input_state->ime_mode_flag + 1) % 3;
             render_input_buffer(key_event, global_state, input_state);
             input_state->state = 0;
+        }
+
+        // 短按C键：切换全局Ctrl键状态
+        else if (key_event->key_edge == -1 && key_event->key_code == KEYCODE_NUM_C) {
+            global_state->is_ctrl_enabled = 1 - global_state->is_ctrl_enabled;
+            render_input_buffer(key_event, global_state, input_state);
+            input_state->state = 0;
+        }
+
+        // 短按D键：进入下一个状态
+        else if (key_event->key_edge == -1 && key_event->key_code == KEYCODE_NUM_D) {
+            input_state->state = 0;
+            return next_focus_state;
         }
 
         // 长+短按*键：光标向左移动
@@ -629,11 +696,11 @@ void draw_input(Key_Event *key_event, Global_State *global_state, Widget_Input_S
 
         // 长+短按#键：光标向右移动
         else if ((key_event->key_edge == -1 || key_event->key_edge == -2) && key_event->key_code == 15) {
-            if (input_state->cursor_pos < input_state->length - 1) {
+            if (input_state->cursor_pos < input_state->textarea.length - 1) {
                 input_state->cursor_pos++;
             }
             else {
-                input_state->cursor_pos = input_state->length - 1;
+                input_state->cursor_pos = input_state->textarea.length - 1;
             }
             render_input_buffer(key_event, global_state, input_state);
         }
@@ -789,6 +856,8 @@ void draw_input(Key_Event *key_event, Global_State *global_state, Widget_Input_S
             input_state->state = 0;
         }
     }
+
+    return current_focus_state;
 }
 
 
@@ -812,11 +881,11 @@ void draw_menu(Key_Event *key_event, Global_State *global_state, Widget_Menu_Sta
 
     fb_soft_clear();
 
-    render_line(menu_state->title, x_indent, 0, 1);
+    fb_draw_textline(menu_state->title, x_indent, 0, 1);
     wchar_t item_counter[13];
     swprintf(item_counter, 13, L"%d/%d", menu_state->current_item_intex + 1, menu_state->item_num);
     int32_t iclen = wcslen(item_counter);
-    render_line(item_counter, 126 - iclen * 6, 0, 1);
+    fb_draw_textline(item_counter, 126 - iclen * 6, 0, 1);
 
     uint32_t y_pos = 13;
     uint8_t is_highlight = 0;
@@ -830,11 +899,11 @@ void draw_menu(Key_Event *key_event, Global_State *global_state, Widget_Menu_Sta
         else {
             is_highlight = 1;
         }
-        render_line(menu_state->items[i], x_indent, y_pos, (1 - is_highlight));
+        fb_draw_textline(menu_state->items[i], x_indent, y_pos, (1 - is_highlight));
         y_pos += (FONT_HEIGHT + 1);
     }
 
-    // NOTE 因render_line会额外给文字上方增加一行，因此这个横线在菜单文字绘制之后再绘制
+    // NOTE 因fb_draw_textline会额外给文字上方增加一行，因此这个横线在菜单文字绘制之后再绘制
     fb_draw_line(0, 12, 128, 12, 1);
 
     gfx_refresh();
@@ -846,12 +915,13 @@ int32_t menu_event_handler(
     Key_Event *ke, Global_State *gs, Widget_Menu_State *ms,
     int32_t (*menu_item_action_callback)(int32_t), int32_t prev_focus_state, int32_t current_focus_state
 ) {
-    // 短按0-9数字键：直接选中屏幕上显示的那页的相对第几项
-    if (ke->key_edge == -1 && (ke->key_code >= KEYCODE_NUM_0 && ke->key_code <= KEYCODE_NUM_9)) {
-        if (ke->key_code < ms->item_num) {
+    // 短按1-9数字键：直接选中屏幕上显示的那页的相对第几项
+    // NOTE 从1开始
+    if (ke->key_edge == -1 && (ke->key_code >= KEYCODE_NUM_1 && ke->key_code <= KEYCODE_NUM_9)) {
+        if (ke->key_code <= ms->items_per_page) {
             ms->current_item_intex = ms->first_item_intex + (uint32_t)(ke->key_code) - 1;
+            return menu_item_action_callback(ms->current_item_intex);
         }
-        return menu_item_action_callback(ms->current_item_intex);
     }
     // 短按A键：返回上一个焦点状态
     else if (ke->key_edge == -1 && ke->key_code == KEYCODE_NUM_A) {
@@ -915,87 +985,73 @@ int32_t menu_event_handler(
 
 void render_input_buffer(Key_Event *key_event, Global_State *global_state, Widget_Input_State *input_state) {
 
+    Widget_Textarea_State *ta = &(input_state->textarea);
+
     fb_soft_clear();
 
-    wchar_t prompt[32] = L"请输入           [";
+    wchar_t prompt[32] = L"请输入         ";
+    // 显示Ctrl激活状态
+    if (global_state->is_ctrl_enabled == 1) {
+        wcscat(prompt, L"◆");
+    }
+    else {
+        wcscat(prompt, L"  ");
+    }
+    // 显示输入状态
     if (input_state->ime_mode_flag == IME_MODE_HANZI) {
-        wcscat(prompt, L"汉]\n");
+        wcscat(prompt, L"[汉]\n");
     }
     else if (input_state->ime_mode_flag == IME_MODE_ALPHABET) {
-        wcscat(prompt, L"En]\n");
+        wcscat(prompt, L"[En]\n");
     }
     else if (input_state->ime_mode_flag == IME_MODE_NUMBER) {
-        wcscat(prompt, L"数]\n");
+        wcscat(prompt, L"[数]\n");
     }
-    render_line(prompt, 0, 0, 0);
+    fb_draw_textline(prompt, 0, 0, 0);
 
     // 绘制右侧未填满的两列像素
     fb_draw_line(126, 0, 126, 12, 1);
     fb_draw_line(127, 0, 127, 12, 1);
 
     // 第一次排版：用于判断光标是否在视图内部
-    // input_state->current_line = 0;
-    text_typeset(
-        1,
-        input_state->text,
-        input_state->width,
-        input_state->height,
-        input_state->current_line,
-        &(input_state->length),
-        input_state->break_pos,
-        &(input_state->line_num),
-        &(input_state->view_lines),
-        &(input_state->view_start_pos),
-        &(input_state->view_end_pos)
-    );
+    // ta->current_line = 0;
+    typeset_line_breaks(ta);
+    typeset_view_range(ta);
 
     // 如果光标不在当前视图范围内
-    if (input_state->cursor_pos < input_state->view_start_pos || input_state->cursor_pos > input_state->view_end_pos) {
+    if (input_state->cursor_pos < ta->view_start_pos || input_state->cursor_pos > ta->view_end_pos) {
         uint32_t cursor_line = 0;
         // 寻找当前光标所在的行
-        for (int32_t i = 0; i < input_state->line_num; i++) {
-            int32_t a = input_state->break_pos[i];
-            int32_t b = (i == input_state->line_num - 1) ? input_state->length : input_state->break_pos[i+1];
+        for (int32_t i = 0; i < ta->line_num; i++) {
+            int32_t a = ta->break_pos[i];
+            int32_t b = (i == ta->line_num - 1) ? ta->length : ta->break_pos[i+1];
             if (input_state->cursor_pos >= a && input_state->cursor_pos < b) {
                 cursor_line = i;
             }
         }
 
         // 如果光标在当前视图上方，则将current_line设为当前光标所在的行
-        if (input_state->cursor_pos < input_state->view_start_pos) {
-            input_state->current_line = cursor_line;
+        if (input_state->cursor_pos < ta->view_start_pos) {
+            ta->current_line = cursor_line;
         }
         // 如果光标在当前视图下方，则将current_line设为当前光标所在行上方view_lines行（即，使得光标所在行位于视图的末行）
         //   逻辑上，如果出现这种情况，一定有 line_num > view_lines
         else {
-            input_state->current_line = cursor_line - input_state->view_lines + 1;
+            ta->current_line = cursor_line - ta->view_lines + 1;
         }
         // 重新排版
-        text_typeset(
-            1,
-            input_state->text,
-            input_state->width,
-            input_state->height,
-            input_state->current_line,
-            &(input_state->length),
-            input_state->break_pos,
-            &(input_state->line_num),
-            &(input_state->view_lines),
-            &(input_state->view_start_pos),
-            &(input_state->view_end_pos)
-        );
+        typeset_line_breaks(ta);
+        typeset_view_range(ta);
     }
 
     // 绘制文本
-    render_text(
-        input_state->text, input_state->current_line, input_state->length, input_state->break_pos, input_state->line_num,
-        input_state->x, input_state->y, input_state->width, input_state->height, 0);
+    render_text(ta);
 
     // 绘制滚动条
-    if (input_state->is_show_scroll_bar) {
+    if (ta->is_show_scroll_bar) {
         render_scroll_bar(
-            input_state->current_line, input_state->line_num, input_state->view_lines,
-            input_state->x, input_state->y, input_state->width, input_state->height);
+            ta->current_line, ta->line_num, ta->view_lines,
+            ta->x, ta->y, ta->width, ta->height);
     }
 
     // 绘制光标
@@ -1006,17 +1062,18 @@ void render_input_buffer(Key_Event *key_event, Global_State *global_state, Widge
 
 
 void render_cursor(Key_Event *key_event, Global_State *global_state, Widget_Input_State *input_state) {
+    Widget_Textarea_State *ta = &(input_state->textarea);
     // 绘制光标：光标位置在cursor_pos所指字符的右外边缘
     int32_t char_index = 0;
     int32_t break_count = 0;
-    int32_t line_x_pos = input_state->x;
+    int32_t line_x_pos = ta->x;
     if (input_state->cursor_pos >= 0) {
-        for (char_index = input_state->view_start_pos; char_index <= input_state->view_end_pos; char_index++) {
-            wchar_t ch = input_state->text[char_index];
+        for (char_index = ta->view_start_pos; char_index <= ta->view_end_pos; char_index++) {
+            wchar_t ch = ta->text[char_index];
             int32_t char_width = (ch < 127) ? ((ch == '\n') ? 0 : 6) : 12;
-            if (line_x_pos + char_width >= input_state->x + input_state->width || ch == '\n') {
+            if (line_x_pos + char_width >= ta->x + ta->width || ch == '\n') {
                 break_count++;
-                line_x_pos = input_state->x;
+                line_x_pos = ta->x;
             }
             line_x_pos += char_width;
             if (input_state->cursor_pos == char_index) break;
@@ -1024,13 +1081,13 @@ void render_cursor(Key_Event *key_event, Global_State *global_state, Widget_Inpu
     }
 
     uint8_t x = line_x_pos;
-    uint8_t y = (uint8_t)(input_state->y + 13 * break_count); // 12x12字模底部本来就有1px的空白，加上行间距1px，所以每行的起始位置是13的倍数
+    uint8_t y = (uint8_t)(ta->y + 13 * break_count); // 12x12字模底部本来就有1px的空白，加上行间距1px，所以每行的起始位置是13的倍数
     fb_draw_line(x, y-1, x, y+12, 2);
     fb_draw_line(x+1, y-1, x+1, y+12, 2);
 }
 
 void render_pinyin_input(Widget_Input_State *input_state, uint32_t is_picking) {
-    fb_soft_clear();
+    // fb_soft_clear();
     // 计算候选列表长度
     uint32_t count = 0;
     wchar_t cc[MAX_CANDIDATE_NUM_PER_PAGE + 1];
@@ -1045,30 +1102,38 @@ void render_pinyin_input(Widget_Input_State *input_state, uint32_t is_picking) {
     cc[count] = 0;
     cindex[count << 1] = 0;
 
-#define PY_BUF_LEN (66)
-    wchar_t buf[PY_BUF_LEN];
+
+    uint32_t y_offset = input_state->textarea.y + 13;
+
+    // 清空输入法显示区域
+    for (int i = y_offset-1; i <= input_state->textarea.y + input_state->textarea.height; i++) {
+        fb_draw_line(input_state->textarea.x, i, input_state->textarea.x + input_state->textarea.width, i, 0);
+    }
+
+    wchar_t buf[30];
     if (is_picking) {
-        swprintf(buf, PY_BUF_LEN, L" \nPY[%-6d]   (%2d/%2d)\n", input_state->pinyin_keys, (input_state->current_page+1), input_state->candidate_page_num);
-        wcscat(buf, cindex);
-        wcscat(buf, L"\n");
+        swprintf(buf, 30, L"PY[%-6d]   (%2d/%2d)", input_state->pinyin_keys, (input_state->current_page+1), input_state->candidate_page_num);
+        fb_draw_textline(buf, 0, y_offset + 0, 1);
+        fb_draw_textline(cindex, 0, y_offset + 13, 1);
     }
     else {
-        swprintf(buf, PY_BUF_LEN, L" \nPY[%-6d]\n\n", input_state->pinyin_keys);
+        swprintf(buf, 30, L"PY[%-6d]", input_state->pinyin_keys);
+        fb_draw_textline(buf, 0, y_offset + 0, 1);
     }
     if (input_state->candidate_num > 0) {
-        wcscat(buf, cc);
+        fb_draw_textline(cc, 0, y_offset + 26, 1);
     }
     else {
-        wcscat(buf, L"(无候选字)");
+        fb_draw_textline(L"(无候选字)", 0, y_offset + 26, 1);
     }
-    render_text(
-        buf, 0, input_state->length, input_state->break_pos, input_state->line_num,
-        input_state->x, input_state->y, input_state->width, input_state->height, 1);
+
+    fb_draw_line(input_state->textarea.x, y_offset-2, input_state->textarea.x + input_state->textarea.width, y_offset-2, 1);
+
     gfx_refresh();
 }
 
 void render_symbol_input(Widget_Input_State *input_state) {
-    fb_soft_clear();
+    // fb_soft_clear();
     // 计算候选列表长度
     uint32_t count = 0;
     uint32_t list_char_width = 0;
@@ -1092,22 +1157,28 @@ void render_symbol_input(Widget_Input_State *input_state) {
     cc[list_char_width] = 0;
     cindex[count << 1] = 0;
 
-#define CANDIDATE_BUF_LEN (66)
-    wchar_t text[CANDIDATE_BUF_LEN];
-    swprintf(text, CANDIDATE_BUF_LEN, L" \nSymbols      (%2d/%2d)\n", (input_state->current_page+1), input_state->candidate_page_num);
-    wcscat(text, cindex);
-    wcscat(text, L"\n");
+
+    uint32_t y_offset = input_state->textarea.y + 13;
+
+    // 清空输入法显示区域
+    for (int i = y_offset-1; i <= input_state->textarea.y + input_state->textarea.height; i++) {
+        fb_draw_line(input_state->textarea.x, i, input_state->textarea.x + input_state->textarea.width, i, 0);
+    }
+
+    wchar_t text[30];
+
+    swprintf(text, 30, L"Symbols      (%2d/%2d)", (input_state->current_page+1), input_state->candidate_page_num);
+    fb_draw_textline(text, 0, y_offset + 0, 1);
+    fb_draw_textline(cindex, 0, y_offset + 13, 1);
 
     if (input_state->candidate_num > 0) {
-        wcscat(text, cc);
+        fb_draw_textline(cc, 0, y_offset + 26, 1);
     }
     else {
-        wcscat(text, L"(无候选符号)");
+        fb_draw_textline(L"(无候选符号)", 0, y_offset + 26, 1);
     }
 
-    render_text(
-        text, 0, input_state->length, input_state->break_pos, input_state->line_num,
-        input_state->x, input_state->y, input_state->width, input_state->height, 1);
+    fb_draw_line(input_state->textarea.x, y_offset-2, input_state->textarea.x + input_state->textarea.width, y_offset-2, 1);
 
     gfx_refresh();
 }

@@ -8,16 +8,14 @@ extern "C" {
 #include <wchar.h>
 
 #include "utils.h"
-#include "infer.h"
 
 #define INPUT_BUFFER_LENGTH  (1024)
-#define OUTPUT_BUFFER_LENGTH (1024)
 
 #define IME_MODE_HANZI    (0)
 #define IME_MODE_ALPHABET (1)
 #define IME_MODE_NUMBER   (2)
 
-#define ALPHABET_COUNTDOWN_MAX (30)
+#define ALPHABET_COUNTDOWN_MS (500)
 #define LONG_PRESS_THRESHOLD (360)
 
 #define MAX_CANDIDATE_NUM (256)     // 候选字最大数量
@@ -27,22 +25,54 @@ extern "C" {
 #define MAX_MENU_ITEMS (128)
 #define MAX_MENU_ITEM_LEN (24)
 
+struct Nano_Context;
+struct Nano_Session;
+
+typedef struct Nano_Context Nano_Context;
+typedef struct Nano_Session Nano_Session;
+
+// NOTE 增删字段时，务必修改初始化部分
 typedef struct {
-    uint64_t timestamp; // 物理时间戳
+    // 全局通用状态
+    uint64_t timestamp; // 物理时间戳（ms）
     int32_t timer; // 主循环计数器：从0开始递增，不与物理时间关联
     int32_t focus;
+    int32_t is_ctrl_enabled; // 是否处于Ctrl键的激活状态：1-是，0-否
+
+    // LLM相关
+    Nano_Context *llm_ctx;
     Nano_Session *llm_session; // LLM一轮对话状态
     int32_t llm_status; // LLM推理状态
+    char *llm_model_path;
+    char *llm_lora_path;
+    float llm_repetition_penalty;
+    float llm_temperature;
+    float llm_top_p;
+    uint32_t llm_top_k;
+    uint32_t llm_max_seq_len;
+    int32_t is_thinking_enabled; // 是否开启思考模式：1-是，0-否
+
+    // ASR相关
+    int32_t is_auto_submit_after_asr; // ASR结束后立刻提交识别内容到LLM？默认值1（不编辑，立刻提交）
     int32_t is_asr_server_up;
     int32_t is_recording; // 录音状态
     uint64_t asr_start_timestamp; // 录音起始的时间戳
 
+    // TTS相关
+    int32_t tts_req_mode; // TTS请求方式：0-关闭（默认值）   1-实时（每生成“一句话”立刻请求TTS）   2-全部生成完成后统一请求TTS
+
+    // UPS相关
     int32_t ups_voltage; // UPS电压
     int32_t ups_soc; // UPS电量
 
+    // 显示相关
     int32_t is_full_refresh; // 作为所有绘制函数的一个参数，用于控制是否整帧刷新。默认为1。0-禁用函数内的clear-refresh，1-启用函数内的clear-refresh
+    uint32_t llm_refresh_max_fps; // 设置项：LLM推理过程中屏幕刷新的最高帧率
+    uint64_t llm_refresh_timestamp; // LLM推理过程中，上一次刷新屏幕的时间戳。用于控制刷新频率（不高于llm_refresh_max_fps），避免刷新过于频繁，拖累表观TPS（目前LLM推理与屏幕刷新是同步串行的）。
 
-    int32_t refresh_ratio; // LLM推理过程中，屏幕刷新的分频系数，也就是每几次推理刷新一次屏幕
+    // BadApple相关
+    uint32_t ba_frame_count;
+    uint64_t ba_begin_timestamp;
 
 } Global_State;
 
@@ -50,7 +80,7 @@ typedef struct {
     uint8_t  prev_key;   // 上一次按键的键值
     uint8_t  key_code;   // 大于等于16为没有任何按键，0-15为按键
     int8_t   key_edge;   // 0：松开  1：上升沿  -1：下降沿(短按结束)  -2：下降沿(长按结束)
-    uint32_t key_timer;  // 按下状态的计时器
+    uint64_t key_timer;  // 按下状态的计时器
     uint8_t  key_mask;   // 长按超时后，键盘软复位标记。此时虽然物理上依然按键，只要软复位标记为1，则认为是无按键，无论是边沿还是按住都不触发。直到物理按键松开后，软复位标记清0。
     uint8_t  key_repeat; // 触发一次长按后，只要不松手，该标记置1，直到物理按键松开后置0。若该标记为1，则在按住时触发连续重复动作。
 } Key_Event;
@@ -61,36 +91,25 @@ typedef struct {
     int32_t y; // NOTE 设置文本框高度时，按照除末行外，每行margin-bottom:1px来计算。例如，如果希望恰好显示4行，则高度应为13*3+12=51px。
     int32_t width;
     int32_t height;
-    wchar_t text[INPUT_BUFFER_LENGTH];
+    wchar_t *text;
     int32_t length;
-    int32_t break_pos[INPUT_BUFFER_LENGTH];
+    int32_t *break_pos;
     int32_t line_num;
     int32_t view_lines;
     int32_t view_start_pos;
     int32_t view_end_pos;
     int32_t current_line;
     int32_t is_show_scroll_bar; // 是否显示滚动条：0不显示 1显示
+    int32_t is_modified; // 文本内容是否有修改过？默认1。用于控制是否进行typeset_line_breaks排版
 } Widget_Textarea_State;
 
 typedef struct {
-    // 以下实际上是继承 Widget_Textarea_State
-    int32_t state; // 内部状态
-    int32_t x;
-    int32_t y;
-    int32_t width;
-    int32_t height;
-    wchar_t text[INPUT_BUFFER_LENGTH];
-    int32_t length;
-    int32_t break_pos[INPUT_BUFFER_LENGTH];
-    int32_t line_num;
-    int32_t view_lines;
-    int32_t view_start_pos;
-    int32_t view_end_pos;
-    int32_t current_line;
-    int32_t is_show_scroll_bar;
+    // 继承 Widget_Textarea_State
+    Widget_Textarea_State textarea;
 
     // 以下是Widget_Input_State独有的
 
+    int32_t state;                // 控件状态（不复用textarea内部的状态）
     int32_t cursor_pos;           // 光标位置
     uint32_t ime_mode_flag;       // 汉英数输入模式标志 0汉字 1英文 2数字
     uint32_t pinyin_keys;         // 单字拼音键码暂存
@@ -101,8 +120,9 @@ typedef struct {
     uint32_t candidate_page_num;  // 总的候选字分页数
     uint32_t current_page;        // 当前显示的候选字页标号
     // 英文字母输入模式的倒计时
-    int32_t alphabet_countdown;   // 从ALPHABET_COUNTDOWN_MAX开始，每轮主循环后倒数减1，减到0时清除进度条，减到-1意味着英文字母输入状态结束
-    uint8_t alphabet_current_key; // 当前选中的字母按键
+    uint64_t alphabet_click_timestamp; // 按键时刻的时间戳，用于计算倒计时进度条
+    int32_t alphabet_is_counting_down; // 1-正在倒计时；0-不在倒计时
+    uint8_t alphabet_current_key;      // 当前选中的字母按键
     uint32_t alphabet_index;
 } Widget_Input_State;
 
@@ -115,14 +135,17 @@ typedef struct {
     wchar_t items[MAX_MENU_ITEMS][MAX_MENU_ITEM_LEN]; // 条目标题
 } Widget_Menu_State;
 
-void render_line(wchar_t *line, uint32_t x, uint32_t y, uint8_t mode);
 
-void render_text(
-    wchar_t *text, int32_t start_line, int32_t length, int32_t *break_pos, int32_t line_num,
-    int32_t x_offset, int32_t y_offset, int32_t width, int32_t height, int32_t do_typeset);
+void render_text(Widget_Textarea_State *textarea_state);
 
 void show_splash_screen(Key_Event *key_event, Global_State *global_state);
 
+void play_bad_apple(Key_Event *key_event, Global_State *global_state);
+
+void init_textarea(Key_Event *key_event, Global_State *global_state, Widget_Textarea_State *textarea_state,
+    uint32_t max_len);
+void set_textarea(Key_Event *key_event, Global_State *global_state, Widget_Textarea_State *textarea_state,
+    wchar_t *text, int32_t current_line, int32_t is_show_scroll_bar);
 void draw_textarea(Key_Event *key_event, Global_State *global_state, Widget_Textarea_State *textarea_state);
 int32_t textarea_event_handler(
     Key_Event *ke, Global_State *gs, Widget_Textarea_State *ts,
@@ -131,7 +154,10 @@ int32_t textarea_event_handler(
 
 void init_input(Key_Event *key_event, Global_State *global_state, Widget_Input_State *input_state);
 void refresh_input(Key_Event *key_event, Global_State *global_state, Widget_Input_State *input_state);
-void draw_input(Key_Event *key_event, Global_State *global_state, Widget_Input_State *input_state);
+int32_t input_event_handler(
+    Key_Event *key_event, Global_State *global_state, Widget_Input_State *input_state,
+    int32_t prev_focus_state, int32_t current_focus_state, int32_t next_focus_state
+);
 
 void init_menu(Key_Event *key_event, Global_State *global_state, Widget_Menu_State *menu_state);
 void refresh_menu(Key_Event *key_event, Global_State *global_state, Widget_Menu_State *menu_state);

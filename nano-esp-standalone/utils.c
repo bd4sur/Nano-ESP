@@ -352,32 +352,39 @@ void freeTree(AVLNode* root) {
 
 // 将 UTF-32 码点（wchar_t）数组转换为 UTF-8 字符串
 // 注意：此函数假设 wchar_t 为 32 位（即 UTF-32），符合 ESP32 的配置（通常 -fshort-wchar 未启用）
-void _wcstombs(char *dest, const wchar_t *src, uint32_t dest_size) {
+uint32_t _wcstombs(char *dest, const wchar_t *src, uint32_t dest_size) {
     const wchar_t *p = src;
     char *q = dest;
+    uint32_t dest_len = 0;
     char *end = dest + dest_size - 1; // 留 1 字节给 \0
 
     while (*p != L'\0' && q < end) {
         uint32_t cp = (uint32_t)*p++;
         if (cp <= 0x7F && q < end) {
             *q++ = (char)cp;
+            dest_len++;
         } else if (cp <= 0x7FF && q + 1 < end) {
             *q++ = 0xC0 | (cp >> 6);
             *q++ = 0x80 | (cp & 0x3F);
+            dest_len += 2;
         } else if (cp <= 0xFFFF && q + 2 < end) {
             *q++ = 0xE0 | (cp >> 12);
             *q++ = 0x80 | ((cp >> 6) & 0x3F);
             *q++ = 0x80 | (cp & 0x3F);
+            dest_len += 3;
         } else if (cp <= 0x10FFFF && q + 3 < end) {
             *q++ = 0xF0 | (cp >> 18);
             *q++ = 0x80 | ((cp >> 12) & 0x3F);
             *q++ = 0x80 | ((cp >> 6) & 0x3F);
             *q++ = 0x80 | (cp & 0x3F);
+            dest_len += 4;
         } else if (q < end) {
             *q++ = '?';
+            dest_len++;
         }
     }
     *q = '\0';
+    return dest_len;
 }
 
 // 将 UTF-8 字符串转换为 null-terminated 的 UTF-32 (wchar_t) 字符串

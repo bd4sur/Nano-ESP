@@ -10,12 +10,44 @@ extern "C" {
 #include "utils.h"
 
 // ===============================================================================
+// 全局字符串常量
+// ===============================================================================
+
+#define NANO_VERSION "2601"
+
+// ===============================================================================
 // 平台相关工具函数
 // ===============================================================================
 
 void sleep_in_ms(uint32_t ms);
 uint64_t get_timestamp_in_ms();
 int32_t graceful_shutdown();
+
+// 将对话记录写入日志文件（JSONL格式）
+int32_t write_chat_log(char *filepath, uint64_t timestamp, wchar_t* prompt, wchar_t* response);
+// 读取文件，并返回新的wchar数组
+wchar_t* read_file_to_wchar(char* filename);
+
+// 根据设备类型选择不同的 calloc 实现
+#ifdef ARDUINO
+    #define calloc_dev(nmemb, size) psram_calloc(nmemb, size)
+#else
+    // 默认使用标准 calloc
+    #define calloc_dev(nmemb, size) calloc(nmemb, size)
+#endif
+
+// ===============================================================================
+// Arduino相关
+// ===============================================================================
+
+#ifdef ARDUINO
+
+void print_str(char* msg);
+void print_num(int i);
+void print_float(float i);
+void *psram_calloc(size_t n, size_t sizeoftype);
+
+#endif
 
 // ===============================================================================
 // Nano-Pod: Raspberry Pi 5
@@ -40,6 +72,8 @@ int32_t graceful_shutdown();
     #define ASR_SERVER_LOG_PATH "/home/bd4sur/ai/_model/FunASR/log.txt"
     // 是否使用pthread实现的matmul？（用于OpenWrt等对OpenMP不友好的场景）
     // #define MATMUL_PTHREAD
+    // BadApple
+    #define BADAPPLE_ENABLED
 
 // ===============================================================================
 // Nano-Pod: Rock 5B+
@@ -64,6 +98,8 @@ int32_t graceful_shutdown();
     #define ASR_SERVER_LOG_PATH "/home/bd4sur/ai/_model/FunASR/log.txt"
     // 是否使用pthread实现的matmul？（用于OpenWrt等对OpenMP不友好的场景）
     // #define MATMUL_PTHREAD
+    // BadApple
+    #define BADAPPLE_ENABLED
 
 // ===============================================================================
 // Nano-Pod: Cubie-A7Z
@@ -88,6 +124,8 @@ int32_t graceful_shutdown();
     // #define ASR_SERVER_LOG_PATH "/home/bd4sur/ai/_model/FunASR/log.txt"
     // 是否使用pthread实现的matmul？（用于OpenWrt等对OpenMP不友好的场景）
     // #define MATMUL_PTHREAD
+    // BadApple
+    #define BADAPPLE_ENABLED
 
 // ===============================================================================
 // Nano-Pod: Make Router Great Again 京东云RE-CS-02、红米AX5等
@@ -112,6 +150,8 @@ int32_t graceful_shutdown();
     // #define ASR_SERVER_LOG_PATH "/home/bd4sur/ai/_model/FunASR/log.txt"
     // 是否使用pthread实现的matmul？（用于OpenWrt等对OpenMP不友好的场景）
     #define MATMUL_PTHREAD
+    // BadApple
+    #define BADAPPLE_ENABLED
 
 // ===============================================================================
 // Nano-ESP: ESP32-S3
@@ -136,6 +176,8 @@ int32_t graceful_shutdown();
     // #define ASR_SERVER_LOG_PATH "/home/bd4sur/ai/_model/FunASR/log.txt"
     // 是否使用pthread实现的matmul？（用于OpenWrt等对OpenMP不友好的场景）
     // #define MATMUL_PTHREAD
+    // BadApple
+    #define BADAPPLE_ENABLED
 
 // ===============================================================================
 // Nano-ESP: ESP32-P4
@@ -160,6 +202,8 @@ int32_t graceful_shutdown();
     // #define ASR_SERVER_LOG_PATH "/home/bd4sur/ai/_model/FunASR/log.txt"
     // 是否使用pthread实现的matmul？（用于OpenWrt等对OpenMP不友好的场景）
     // #define MATMUL_PTHREAD
+    // BadApple
+    #define BADAPPLE_ENABLED
 
 // ===============================================================================
 // Nano-TTY: 在终端上模拟Nano-Pod的图形界面和交互
@@ -184,6 +228,8 @@ int32_t graceful_shutdown();
     // #define ASR_SERVER_LOG_PATH "/home/bd4sur/ai/_model/FunASR/log.txt"
     // 是否使用pthread实现的matmul？（用于OpenWrt等对OpenMP不友好的场景）
     // #define MATMUL_PTHREAD
+    // BadApple
+    #define BADAPPLE_ENABLED
 
 // ===============================================================================
 // Nano-CLI
@@ -208,6 +254,8 @@ int32_t graceful_shutdown();
     // #define ASR_SERVER_LOG_PATH "/home/bd4sur/ai/_model/FunASR/log.txt"
     // 是否使用pthread实现的matmul？（用于OpenWrt等对OpenMP不友好的场景）
     // #define MATMUL_PTHREAD
+    // BadApple
+    // #define BADAPPLE_ENABLED
 
 // ===============================================================================
 // Nano-Sort
@@ -232,6 +280,8 @@ int32_t graceful_shutdown();
     // #define ASR_SERVER_LOG_PATH "/home/bd4sur/ai/_model/FunASR/log.txt"
     // 是否使用pthread实现的matmul？（用于OpenWrt等对OpenMP不友好的场景）
     // #define MATMUL_PTHREAD
+    // BadApple
+    // #define BADAPPLE_ENABLED
 
 // ===============================================================================
 // Nano-WSS
@@ -256,6 +306,8 @@ int32_t graceful_shutdown();
     // #define ASR_SERVER_LOG_PATH "/home/bd4sur/ai/_model/FunASR/log.txt"
     // 是否使用pthread实现的matmul？（用于OpenWrt等对OpenMP不友好的场景）
     // #define MATMUL_PTHREAD
+    // BadApple
+    // #define BADAPPLE_ENABLED
 
 #else
 
