@@ -20,7 +20,7 @@
 - USB DFU On Boot: "Disabled'
 - Erase All Flash Before Sketch Upload: "Enabled"
 - Events Run On: "Core 1"
-- Flash Mode: "OPI 80MHz"
+- Flash Mode: "QIO 80MHz"
 - Flash Size: "32MB (256Mb)"
 - JTAG Adapter: "Disabled"
 - Arduino Runs On: "Core 1"

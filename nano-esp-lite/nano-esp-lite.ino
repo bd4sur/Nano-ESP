@@ -1,6 +1,7 @@
 #include <wchar.h>
 #include <stdint.h>
 #include <esp32-hal-psram.h>
+#include <esp_random.h>
 #include <Wire.h>
 
 #include "model_psycho_230k_1214_q80.h"
@@ -26,6 +27,8 @@ Widget_Textarea_State  *w_textarea_prefill = {0};
 
 
 int32_t on_llm_prefilling(Nano_Session *session) {
+
+    global_state->timestamp = get_timestamp_in_ms();
 
     if (session->t_0 == 0) {
         session->t_0 = global_state->timestamp;
@@ -70,6 +73,8 @@ int32_t on_llm_prefilling(Nano_Session *session) {
 
 int32_t on_llm_decoding(Nano_Session *session) {
 
+    global_state->timestamp = get_timestamp_in_ms();
+
     if (session->t_0 == 0) {
         session->t_0 = global_state->timestamp;
     }
@@ -92,6 +97,8 @@ int32_t on_llm_decoding(Nano_Session *session) {
 }
 
 int32_t on_llm_finished(Nano_Session *session) {
+
+    global_state->timestamp = get_timestamp_in_ms();
 
     session->t_1 = global_state->timestamp;
     session->tps = (session->pos - 1) / (float)(session->t_1 - session->t_0) * 1000;
@@ -136,7 +143,7 @@ void setup() {
 
     global_state->is_thinking_enabled = 1;
     global_state->is_full_refresh = 1;
-    global_state->llm_refresh_max_fps = 10;
+    global_state->llm_refresh_max_fps = 20;
     global_state->llm_refresh_timestamp = 0;
 
     init_textarea(key_event, global_state, w_textarea_main, INPUT_BUFFER_LENGTH);
@@ -176,7 +183,7 @@ void setup() {
         global_state->llm_temperature,
         global_state->llm_top_p,
         global_state->llm_top_k,
-        global_state->timestamp);
+        esp_random());
 
     ///////////////////////////////////////
     // Session初始化
@@ -184,7 +191,11 @@ void setup() {
     wchar_t *prompt = (wchar_t*)calloc_dev(global_state->llm_max_seq_len + 1, sizeof(wchar_t));
 
     while (1) {
+        global_state->timestamp = get_timestamp_in_ms();
+
         wcscpy(prompt, last_llm_out);
+        set_textarea(key_event, global_state, w_textarea_main, prompt, 0, 0);
+        draw_textarea(key_event, global_state, w_textarea_main);
         generate_sync(global_state->llm_ctx, prompt, global_state->llm_max_seq_len, on_llm_prefilling, on_llm_decoding, on_llm_finished);
     }
 
